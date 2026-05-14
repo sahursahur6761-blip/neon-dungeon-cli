@@ -40,6 +40,7 @@ class Map:
         self.width = width
         self.height = height
         self.tiles = [['#' for _ in range(width)] for _ in range(height)]
+        self.explored = [[False for _ in range(width)] for _ in range(height)]
         self.rooms = []
 
     def create_room(self, room):
@@ -59,6 +60,9 @@ class Map:
                 self.tiles[y][x] = '.'
 
     def generate_map(self):
+        self.tiles = [['#' for _ in range(self.width)] for _ in range(self.height)]
+        self.explored = [[False for _ in range(self.width)] for _ in range(self.height)]
+        self.rooms = []
         max_rooms = 30
         room_min_size = 6
         room_max_size = 10
@@ -90,6 +94,11 @@ class Map:
                         self.create_h_tunnel(prev_x, new_x, new_y)
 
                 self.rooms.append(new_room)
+
+        # Place stairs in the last room
+        if self.rooms:
+            sx, sy = self.rooms[-1].center()
+            self.tiles[sy][sx] = '>'
 
     def is_blocked(self, x, y):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
@@ -137,6 +146,7 @@ class Game:
         self.map_width = self.screen_width
         self.map_height = self.screen_height - 6
 
+        self.depth = 1
         self.dungeon_map = Map(self.map_width, self.map_height)
         self.dungeon_map.generate_map()
 
@@ -145,25 +155,66 @@ class Game:
         self.entities = [self.player]
         self.messages = ["Welcome to the Neon Dungeon!"]
 
+        self.spawn_level_content()
+
+    def next_level(self):
+        self.depth += 1
+        self.message(f"Descending to level {self.depth}...")
+        self.dungeon_map.generate_map()
+
+        start_room_center = self.dungeon_map.rooms[0].center()
+        self.player.x, self.player.y = start_room_center
+        self.entities = [self.player]
+
+        self.spawn_level_content()
+
+    def spawn_level_content(self):
         self.spawn_enemies()
         self.spawn_items()
 
+    def update_fov(self):
+        radius = 5
+        for y in range(max(0, self.player.y - radius), min(self.map_height, self.player.y + radius + 1)):
+            for x in range(max(0, self.player.x - radius), min(self.map_width, self.player.x + radius + 1)):
+                self.dungeon_map.explored[y][x] = True
+
     def spawn_items(self):
         for room in self.dungeon_map.rooms[1:]:
-            if random.randint(0, 100) < 30:
+            if random.randint(0, 100) < 40:
                 x, y = room.center()
-                # Offset item from center if enemy is there
                 if any(e.x == x and e.y == y for e in self.entities):
                     x += 1
-                item = Entity(x, y, '*', COLOR_NEON_YELLOW, "Neon Battery", hp=0, atk=0, defense=0)
+
+                roll = random.randint(0, 100)
+                if roll < 60:
+                    item = Entity(x, y, '*', COLOR_NEON_YELLOW, "Neon Battery", hp=0, atk=0, defense=0)
+                    item.item_type = 'heal'
+                elif roll < 85:
+                    item = Entity(x, y, '!', COLOR_NEON_CYAN, "Power Cell", hp=0, atk=0, defense=0)
+                    item.item_type = 'atk'
+                else:
+                    item = Entity(x, y, '[', COLOR_NEON_MAGENTA, "Cyber Shield", hp=0, atk=0, defense=0)
+                    item.item_type = 'def'
+
                 item.is_item = True
                 self.entities.append(item)
 
     def spawn_enemies(self):
         for room in self.dungeon_map.rooms[1:]:
-            if random.randint(0, 100) < 80:
+            if random.randint(0, 100) < 70 + self.depth * 2:
                 x, y = room.center()
-                enemy = Entity(x, y, 'E', COLOR_NEON_RED, "Neon Glitch", hp=10, atk=3, defense=1)
+
+                roll = random.randint(0, 100)
+                if roll < 60:
+                    enemy = Entity(x, y, 'g', COLOR_NEON_RED, "Glitch",
+                                   hp=8 + self.depth * 2, atk=2 + self.depth, defense=1 + self.depth // 2)
+                elif roll < 85:
+                    enemy = Entity(x, y, 'T', COLOR_NEON_MAGENTA, "Tank-Bot",
+                                   hp=20 + self.depth * 4, atk=1 + self.depth, defense=3 + self.depth)
+                else:
+                    enemy = Entity(x, y, 'S', COLOR_NEON_YELLOW, "Stalker",
+                                   hp=5 + self.depth, atk=5 + self.depth * 2, defense=0)
+
                 self.entities.append(enemy)
 
     def message(self, text):
@@ -173,6 +224,7 @@ class Game:
 
     def save_game(self):
         save_data = {
+            "depth": self.depth,
             "player": {
                 "x": self.player.x,
                 "y": self.player.y,
@@ -194,13 +246,15 @@ class Game:
                     "max_hp": e.max_hp,
                     "atk": e.atk,
                     "defense": e.defense,
-                    "is_item": hasattr(e, 'is_item')
+                    "is_item": hasattr(e, 'is_item'),
+                    "item_type": getattr(e, 'item_type', None)
                 } for e in self.entities if e != self.player
             ],
             "map": {
                 "width": self.dungeon_map.width,
                 "height": self.dungeon_map.height,
-                "tiles": self.dungeon_map.tiles
+                "tiles": self.dungeon_map.tiles,
+                "explored": self.dungeon_map.explored
             }
         }
         with open("savegame.json", "w") as f:
@@ -215,11 +269,11 @@ class Game:
         with open("savegame.json", "r") as f:
             save_data = json.load(f)
 
+        self.depth = save_data.get("depth", 1)
         map_data = save_data["map"]
         self.dungeon_map = Map(map_data["width"], map_data["height"])
         self.dungeon_map.tiles = map_data["tiles"]
-        # Note: rooms are not strictly needed for gameplay once map is generated,
-        # but could be reconstructed if needed for more generation.
+        self.dungeon_map.explored = map_data.get("explored", [[False for _ in range(self.dungeon_map.width)] for _ in range(self.dungeon_map.height)])
 
         p_data = save_data["player"]
         self.player = Entity(p_data["x"], p_data["y"], '@', COLOR_NEON_GREEN, "Player",
@@ -234,6 +288,7 @@ class Game:
             entity.max_hp = e_data["max_hp"]
             if e_data.get("is_item"):
                 entity.is_item = True
+                entity.item_type = e_data.get("item_type")
             self.entities.append(entity)
 
         self.message("Game Loaded!")
@@ -272,11 +327,23 @@ class Game:
                     self.pick_up(target)
                 else:
                     self.attack(self.player, target)
-            self.enemy_turn()
+
+            # Check for stairs after movement
+            if self.dungeon_map.tiles[self.player.y][self.player.x] == '>':
+                self.next_level()
+            else:
+                self.enemy_turn()
 
     def pick_up(self, item):
-        self.message(f"Picked up {item.name}! HP restored.")
-        self.player.hp = min(self.player.max_hp, self.player.hp + 5)
+        if item.item_type == 'heal':
+            self.message(f"Picked up {item.name}! +10 HP.")
+            self.player.hp = min(self.player.max_hp, self.player.hp + 10)
+        elif item.item_type == 'atk':
+            self.message(f"Picked up {item.name}! +1 ATK.")
+            self.player.atk += 1
+        elif item.item_type == 'def':
+            self.message(f"Picked up {item.name}! +1 DEF.")
+            self.player.defense += 1
         self.entities.remove(item)
 
     def attack(self, attacker, target):
@@ -302,7 +369,7 @@ class Game:
 
     def enemy_turn(self):
         for entity in self.entities:
-            if entity == self.player:
+            if entity == self.player or hasattr(entity, 'is_item'):
                 continue
 
             dx = 0
@@ -329,11 +396,22 @@ class Game:
         for y in range(min(self.map_height, self.screen_height)):
             for x in range(min(self.map_width, self.screen_width)):
                 if y == self.screen_height - 1 and x == self.screen_width - 1:
-                    continue # Avoid writing to the last character of the screen
+                    continue
+
+                if not self.dungeon_map.explored[y][x]:
+                    continue
+
                 char = self.dungeon_map.tiles[y][x]
                 color = curses.color_pair(COLOR_NEON_CYAN)
+
+                dist = abs(self.player.x - x) + abs(self.player.y - y)
+                is_visible = dist < 7
+
                 if char == '#':
                     color = curses.color_pair(COLOR_NEON_MAGENTA)
+                elif char == '>':
+                    color = curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD
+
                 try:
                     self.stdscr.addch(y, x, char, color)
                 except curses.error:
@@ -341,6 +419,13 @@ class Game:
 
         # Draw Entities
         for entity in self.entities:
+            if not self.dungeon_map.explored[entity.y][entity.x]:
+                continue
+
+            dist = abs(self.player.x - entity.x) + abs(self.player.y - entity.y)
+            if dist > 7 and entity != self.player:
+                continue
+
             if 0 <= entity.x < self.screen_width and 0 <= entity.y < self.screen_height:
                 if entity.y == self.screen_height - 1 and entity.x == self.screen_width - 1:
                     continue
@@ -352,7 +437,8 @@ class Game:
         # Draw UI
         ui_y = self.map_height + 1
         if ui_y < self.screen_height:
-            self.stdscr.addstr(ui_y, 0, "NEON DUNGEON CLI"[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+            header = f"NEON DUNGEON CLI | DEPTH: {self.depth}"
+            self.stdscr.addstr(ui_y, 0, header[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
         if ui_y + 1 < self.screen_height:
             stats = f"LVL: {self.player.level} | HP: {self.player.hp}/{self.player.max_hp} | ATK: {self.player.atk} | DEF: {self.player.defense} | XP: {self.player.xp}/{self.player.level*10}"
             self.stdscr.addstr(ui_y + 1, 0, stats[:self.screen_width-1], curses.color_pair(COLOR_NEON_CYAN))
@@ -368,6 +454,7 @@ class Game:
 
     def run(self):
         while self.running:
+            self.update_fov()
             self.handle_input()
             self.update()
             self.draw()
