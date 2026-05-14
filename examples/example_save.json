@@ -1,0 +1,24 @@
+{
+  "name": "Neo",
+  "class_name": "Hacker",
+  "hp": 18,
+  "max_hp": 20,
+  "attack": 5,
+  "defense": 2,
+  "dodge_chance": 5,
+  "level": 1,
+  "xp": 25,
+  "credits": 10,
+  "floor": 2,
+  "inventory": [
+    "Health Patch"
+  ],
+  "equipped_weapon": "Rusty Keyboard",
+  "equipped_armor": "Hoodie",
+  "skills": [
+    "Data Spike"
+  ],
+  "defeated_bosses": [],
+  "active_run": true,
+  "modifiers": ["Calm"]
+}
