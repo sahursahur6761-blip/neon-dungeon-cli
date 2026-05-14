@@ -114,10 +114,33 @@ class Entity:
         self.name = name
         self.max_hp = hp
         self.hp = hp
-        self.atk = atk
-        self.defense = defense
+        self.base_atk = atk
+        self.base_defense = defense
         self.level = level
         self.xp = xp
+        self.equipment = {"weapon": None, "armor": None}
+
+    @property
+    def atk(self):
+        val = self.base_atk
+        if self.equipment["weapon"]:
+            val += self.equipment["weapon"].power
+        return val
+
+    @atk.setter
+    def atk(self, value):
+        self.base_atk = value
+
+    @property
+    def defense(self):
+        val = self.base_defense
+        if self.equipment["armor"]:
+            val += self.equipment["armor"].power
+        return val
+
+    @defense.setter
+    def defense(self, value):
+        self.base_defense = value
 
     def move(self, dx, dy, dungeon_map, entities):
         if not dungeon_map.is_blocked(self.x + dx, self.y + dy):
@@ -144,7 +167,7 @@ class Game:
 
         self.screen_height, self.screen_width = self.stdscr.getmaxyx()
         self.map_width = self.screen_width
-        self.map_height = self.screen_height - 6
+        self.map_height = self.screen_height - 8
 
         self.depth = 1
         self.dungeon_map = Map(self.map_width, self.map_height)
@@ -171,6 +194,15 @@ class Game:
     def spawn_level_content(self):
         self.spawn_enemies()
         self.spawn_items()
+        self.spawn_hazards()
+
+    def spawn_hazards(self):
+        for room in self.dungeon_map.rooms:
+            if random.randint(0, 100) < 20:
+                x, y = room.center()
+                x += 2 # Offset from center
+                if 0 <= x < self.map_width:
+                    self.dungeon_map.tiles[y][x] = '^' # Spike trap/Hazard
 
     def update_fov(self):
         radius = 5
@@ -180,46 +212,83 @@ class Game:
 
     def spawn_items(self):
         for room in self.dungeon_map.rooms[1:]:
-            if random.randint(0, 100) < 40:
+            if random.randint(0, 100) < 45:
                 x, y = room.center()
                 if any(e.x == x and e.y == y for e in self.entities):
                     x += 1
 
                 roll = random.randint(0, 100)
-                if roll < 60:
+                if roll < 50:
                     item = Entity(x, y, '*', COLOR_NEON_YELLOW, "Neon Battery", hp=0, atk=0, defense=0)
                     item.item_type = 'heal'
-                elif roll < 85:
-                    item = Entity(x, y, '!', COLOR_NEON_CYAN, "Power Cell", hp=0, atk=0, defense=0)
-                    item.item_type = 'atk'
+                elif roll < 75:
+                    rarity_roll = random.randint(0, 100)
+                    if rarity_roll < 70:
+                        rarity, power, color = "Common", 2, COLOR_NEON_CYAN
+                    elif rarity_roll < 95:
+                        rarity, power, color = "Rare", 5, COLOR_NEON_YELLOW
+                    else:
+                        rarity, power, color = "Legendary", 10, COLOR_NEON_MAGENTA
+
+                    names = ["Pulse Blade", "Neural Link", "Laser Edge"]
+                    item = Entity(x, y, '!', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
+                    item.item_type = 'weapon'
+                    item.power = power
                 else:
-                    item = Entity(x, y, '[', COLOR_NEON_MAGENTA, "Cyber Shield", hp=0, atk=0, defense=0)
-                    item.item_type = 'def'
+                    rarity_roll = random.randint(0, 100)
+                    if rarity_roll < 70:
+                        rarity, power, color = "Common", 1, COLOR_NEON_CYAN
+                    elif rarity_roll < 95:
+                        rarity, power, color = "Rare", 3, COLOR_NEON_YELLOW
+                    else:
+                        rarity, power, color = "Legendary", 6, COLOR_NEON_MAGENTA
+
+                    names = ["Nano-Suit", "Mesh Plate", "Energy Field"]
+                    item = Entity(x, y, '[', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
+                    item.item_type = 'armor'
+                    item.power = power
 
                 item.is_item = True
                 self.entities.append(item)
 
     def spawn_enemies(self):
+        if self.depth % 5 == 0:
+            # Boss level!
+            room = self.dungeon_map.rooms[-1]
+            x, y = room.center()
+            boss = Entity(x, y, 'B', COLOR_NEON_RED, "NEON OVERLORD",
+                          hp=100 + self.depth * 10, atk=15 + self.depth * 2, defense=10 + self.depth)
+            boss.is_boss = True
+            self.entities.append(boss)
+            return
+
         for room in self.dungeon_map.rooms[1:]:
             if random.randint(0, 100) < 70 + self.depth * 2:
                 x, y = room.center()
 
                 roll = random.randint(0, 100)
-                if roll < 60:
+                if roll < 50:
                     enemy = Entity(x, y, 'g', COLOR_NEON_RED, "Glitch",
                                    hp=8 + self.depth * 2, atk=2 + self.depth, defense=1 + self.depth // 2)
-                elif roll < 85:
+                    enemy.ai_type = 'chase'
+                elif roll < 75:
                     enemy = Entity(x, y, 'T', COLOR_NEON_MAGENTA, "Tank-Bot",
                                    hp=20 + self.depth * 4, atk=1 + self.depth, defense=3 + self.depth)
-                else:
+                    enemy.ai_type = 'chase'
+                elif roll < 90:
                     enemy = Entity(x, y, 'S', COLOR_NEON_YELLOW, "Stalker",
                                    hp=5 + self.depth, atk=5 + self.depth * 2, defense=0)
+                    enemy.ai_type = 'chase'
+                else:
+                    enemy = Entity(x, y, 'r', COLOR_NEON_CYAN, "Ranged-Unit",
+                                   hp=10 + self.depth, atk=4 + self.depth, defense=1)
+                    enemy.ai_type = 'ranged'
 
                 self.entities.append(enemy)
 
     def message(self, text):
         self.messages.append(text)
-        if len(self.messages) > 3:
+        if len(self.messages) > 5:
             self.messages.pop(0)
 
     def save_game(self):
@@ -230,10 +299,21 @@ class Game:
                 "y": self.player.y,
                 "hp": self.player.hp,
                 "max_hp": self.player.max_hp,
-                "atk": self.player.atk,
-                "defense": self.player.defense,
+                "base_atk": self.player.base_atk,
+                "base_defense": self.player.base_defense,
                 "level": self.player.level,
-                "xp": self.player.xp
+                "xp": self.player.xp,
+                "perks": getattr(self.player, 'perks', []),
+                "equipment": {
+                    slot: {
+                        "name": item.name,
+                        "power": item.power,
+                        "color": item.color,
+                        "char": item.char,
+                        "item_type": item.item_type
+                    } if item else None
+                    for slot, item in self.player.equipment.items()
+                }
             },
             "entities": [
                 {
@@ -277,9 +357,17 @@ class Game:
 
         p_data = save_data["player"]
         self.player = Entity(p_data["x"], p_data["y"], '@', COLOR_NEON_GREEN, "Player",
-                             hp=p_data["hp"], atk=p_data["atk"], defense=p_data["defense"],
+                             hp=p_data["hp"], atk=p_data["base_atk"], defense=p_data["base_defense"],
                              level=p_data["level"], xp=p_data["xp"])
         self.player.max_hp = p_data["max_hp"]
+        self.player.perks = p_data.get("perks", [])
+
+        for slot, item_data in p_data.get("equipment", {}).items():
+            if item_data:
+                item = Entity(0, 0, item_data["char"], item_data["color"], item_data["name"])
+                item.item_type = item_data["item_type"]
+                item.power = item_data["power"]
+                self.player.equipment[slot] = item
 
         self.entities = [self.player]
         for e_data in save_data["entities"]:
@@ -329,27 +417,52 @@ class Game:
                     self.attack(self.player, target)
 
             # Check for stairs after movement
-            if self.dungeon_map.tiles[self.player.y][self.player.x] == '>':
+            tile = self.dungeon_map.tiles[self.player.y][self.player.x]
+            if tile == '>':
                 self.next_level()
             else:
+                if tile == '^':
+                    self.message("OUCH! Stepped on a hazard!")
+                    self.player.hp -= 3
                 self.enemy_turn()
 
     def pick_up(self, item):
         if item.item_type == 'heal':
-            self.message(f"Picked up {item.name}! +10 HP.")
+            self.message(f"Used {item.name}! +10 HP.")
             self.player.hp = min(self.player.max_hp, self.player.hp + 10)
-        elif item.item_type == 'atk':
-            self.message(f"Picked up {item.name}! +1 ATK.")
-            self.player.atk += 1
-        elif item.item_type == 'def':
-            self.message(f"Picked up {item.name}! +1 DEF.")
-            self.player.defense += 1
+        elif item.item_type == 'weapon':
+            self.player.equipment["weapon"] = item
+            self.message(f"Equipped {item.name}!")
+        elif item.item_type == 'armor':
+            self.player.equipment["armor"] = item
+            self.message(f"Equipped {item.name}!")
         self.entities.remove(item)
 
     def attack(self, attacker, target):
+        # Dodge check
+        dodge_chance = 0.05
+        if hasattr(target, 'perks') and "evade" in target.perks:
+            dodge_chance += 0.15
+
+        if random.random() < dodge_chance:
+            self.message(f"{target.name} dodged the attack!")
+            return
+
+        # Critical hit check
+        crit_chance = 0.1
+        is_crit = random.random() < crit_chance
+
         damage = max(0, attacker.atk - target.defense)
+        if is_crit:
+            damage = int(damage * 1.5)
+            self.message(f"CRITICAL HIT!")
+
         target.hp -= damage
         self.message(f"{attacker.name} hits {target.name} for {damage}!")
+
+        # Life Leach
+        if damage > 0 and hasattr(attacker, 'perks') and "life_leach" in attacker.perks:
+            attacker.hp = min(attacker.max_hp, attacker.hp + 1)
         if target.hp <= 0:
             self.message(f"{target.name} dies!")
             if target != self.player:
@@ -361,26 +474,93 @@ class Game:
     def level_up(self, entity):
         entity.level += 1
         entity.xp = 0
-        entity.max_hp += 5
-        entity.hp = entity.max_hp
-        entity.atk += 2
-        entity.defense += 1
+        if entity == self.player:
+            self.perk_choice()
+        else:
+            entity.max_hp += 5
+            entity.hp = entity.max_hp
+            entity.atk += 2
+            entity.defense += 1
         self.message(f"{entity.name} leveled up to {entity.level}!")
+
+    def perk_choice(self):
+        perks = [
+            ("Overclock", "Gain +3 ATK"),
+            ("Titan Shell", "Gain +2 DEF"),
+            ("Nano-Repair", "Gain +15 Max HP and heal to full"),
+            ("Siphon Pulse", "Life Leach: Heal 1 HP on every hit"),
+            ("Reflex Boost", "Evade: 15% chance to dodge attacks")
+        ]
+        chosen_perks = random.sample(perks, 3)
+
+        self.draw() # Final draw before menu
+        menu_h, menu_w = 10, 40
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.keypad(True)
+
+        selected = 0
+        while True:
+            win.addstr(1, 2, "--- CYBER PERK SELECTION ---", curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
+            for i, (name, desc) in enumerate(chosen_perks):
+                attr = curses.A_REVERSE if i == selected else curses.A_NORMAL
+                win.addstr(3 + i, 2, f"{name}: {desc}", attr)
+
+            win.refresh()
+            key = win.getch()
+            if key == curses.KEY_UP:
+                selected = (selected - 1) % 3
+            elif key == curses.KEY_DOWN:
+                selected = (selected + 1) % 3
+            elif key in [10, 13, ord(' ')]: # Enter or Space
+                perk_name = chosen_perks[selected][0]
+                self.apply_perk(perk_name)
+                break
+
+    def apply_perk(self, perk_name):
+        if perk_name == "Overclock":
+            self.player.atk += 3
+        elif perk_name == "Titan Shell":
+            self.player.defense += 2
+        elif perk_name == "Nano-Repair":
+            self.player.max_hp += 15
+            self.player.hp = self.player.max_hp
+        elif perk_name == "Siphon Pulse":
+            if not hasattr(self.player, 'perks'): self.player.perks = []
+            self.player.perks.append("life_leach")
+        elif perk_name == "Reflex Boost":
+            if not hasattr(self.player, 'perks'): self.player.perks = []
+            self.player.perks.append("evade")
+        self.message(f"Selected Perk: {perk_name}!")
 
     def enemy_turn(self):
         for entity in self.entities:
             if entity == self.player or hasattr(entity, 'is_item'):
                 continue
 
-            dx = 0
-            dy = 0
-            if entity.x < self.player.x: dx = 1
-            elif entity.x > self.player.x: dx = -1
-            elif entity.y < self.player.y: dy = 1
-            elif entity.y > self.player.y: dy = -1
+            ai_type = getattr(entity, 'ai_type', 'chase')
+            dist = abs(entity.x - self.player.x) + abs(entity.y - self.player.y)
+
+            dx, dy = 0, 0
+            if ai_type == 'chase' or (ai_type == 'ranged' and dist > 4):
+                if entity.x < self.player.x: dx = 1
+                elif entity.x > self.player.x: dx = -1
+                elif entity.y < self.player.y: dy = 1
+                elif entity.y > self.player.y: dy = -1
+            elif ai_type == 'ranged' and dist <= 3:
+                # Try to move away
+                if entity.x < self.player.x: dx = -1
+                elif entity.x > self.player.x: dx = 1
+                elif entity.y < self.player.y: dy = -1
+                elif entity.y > self.player.y: dy = 1
+
+            can_shoot = ai_type == 'ranged' and dist <= 5
 
             target = entity.move(dx, dy, self.dungeon_map, self.entities)
             if target == self.player:
+                self.attack(entity, self.player)
+            elif can_shoot:
                 self.attack(entity, self.player)
 
     def update(self):
@@ -411,6 +591,8 @@ class Game:
                     color = curses.color_pair(COLOR_NEON_MAGENTA)
                 elif char == '>':
                     color = curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD
+                elif char == '^':
+                    color = curses.color_pair(COLOR_NEON_RED)
 
                 try:
                     self.stdscr.addch(y, x, char, color)
@@ -448,7 +630,7 @@ class Game:
 
         for i, msg in enumerate(self.messages):
             if ui_y + 3 + i < self.screen_height:
-                self.stdscr.addstr(ui_y + 3 + i, 0, msg[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW))
+                self.stdscr.addstr(ui_y + 3 + i, 0, f"> {msg}"[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW))
 
         self.stdscr.refresh()
 
@@ -460,7 +642,39 @@ class Game:
             self.draw()
             curses.napms(33) # ~30 FPS
 
+def show_splash(stdscr):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    splash = [
+        r" _   _  _____ _____ _   _ ",
+        r"| \ | ||  ___|  _  | \ | |",
+        r"|  \| || |__ | | | |  \| |",
+        r"| . ` ||  __|| | | | . ` |",
+        r"| |\  || |___\ \_/ / |\  |",
+        r"\_| \_/\____/ \___/\_| \_/",
+        r"                          ",
+        r" _____  _   _ _   _ _____ _____ _____ _   _ ",
+        r"|  _  || | | | \ | |  __ \  ___|  _  | \ | |",
+        r"| | | || | | |  \| | |  \/ |__ | | | |  \| |",
+        "| | | || | | | . ` | | __|  __|| | | | . ` |",
+        r"\ \_/ /| |_| | |\  | |_\ \ |___\ \_/ / |\  |",
+        r" \___/  \___/\_| \_/\____/\____/ \___/\_| \_/"
+    ]
+    for i, line in enumerate(splash):
+        if i < h:
+            stdscr.addstr(i + 2, (w - len(line)) // 2, line, curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
+
+    msg = "PRESS ANY KEY TO START"
+    if h > len(splash) + 4:
+        stdscr.addstr(len(splash) + 5, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BLINK)
+    stdscr.refresh()
+    stdscr.nodelay(False)
+    stdscr.getch()
+    stdscr.nodelay(True)
+
 def main(stdscr):
+    init_colors()
+    show_splash(stdscr)
     game = Game(stdscr)
     game.run()
 
