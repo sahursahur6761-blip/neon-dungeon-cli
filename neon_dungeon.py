@@ -2,6 +2,7 @@ import curses
 import random
 import json
 import os
+import heapq
 
 # Colors
 COLOR_NEON_CYAN = 1
@@ -105,6 +106,46 @@ class Map:
             return True
         return self.tiles[y][x] == '#'
 
+    def get_path(self, start, goal):
+        # A* Pathfinding
+        open_list = []
+        heapq.heappush(open_list, (0, start))
+        came_from = {}
+        cost_so_far = {}
+        came_from[start] = None
+        cost_so_far[start] = 0
+
+        while open_list:
+            _, current = heapq.heappop(open_list)
+
+            if current == goal:
+                break
+
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                next_node = (current[0] + dx, current[1] + dy)
+                if self.is_blocked(next_node[0], next_node[1]):
+                    continue
+
+                new_cost = cost_so_far[current] + 1
+                if next_node not in cost_so_far or new_cost < cost_so_far[next_node]:
+                    cost_so_far[next_node] = new_cost
+                    # Manhattan distance heuristic
+                    priority = new_cost + abs(goal[0] - next_node[0]) + abs(goal[1] - next_node[1])
+                    heapq.heappush(open_list, (priority, next_node))
+                    came_from[next_node] = current
+
+        if goal not in came_from:
+            return None
+
+        # Reconstruct path
+        path = []
+        current = goal
+        while current != start:
+            path.append(current)
+            current = came_from[current]
+        path.reverse()
+        return path
+
 class Entity:
     def __init__(self, x, y, char, color, name, hp=10, atk=3, defense=1, level=1, xp=0):
         self.x = x
@@ -124,6 +165,8 @@ class Entity:
         self.player_class = None
         self.max_memory = 0
         self.memory = 0
+        self.vfx_timer = 0
+        self.vfx_char = None
 
     @property
     def atk(self):
@@ -174,6 +217,7 @@ class Game:
         self.map_height = self.screen_height - 8
 
         self.depth = 1
+        self.level_modifier = None
         self.dungeon_map = Map(self.map_width, self.map_height)
         self.dungeon_map.generate_map()
 
@@ -235,6 +279,13 @@ class Game:
 
     def next_level(self):
         self.depth += 1
+        self.level_modifier = None
+        if random.randint(0, 100) < 20:
+            mods = ["LIGHTS OUT", "NANITE SURGE", "OVERCLOCKED"]
+            self.level_modifier = random.choice(mods)
+            self.message(f"GLITCH DETECTED: {self.level_modifier}")
+            curses.flash()
+
         self.message(f"Descending to level {self.depth}...")
         self.dungeon_map.generate_map()
 
@@ -249,6 +300,17 @@ class Game:
         self.spawn_items()
         self.spawn_hazards()
         self.spawn_merchant()
+        self.spawn_lore_terminal()
+
+    def spawn_lore_terminal(self):
+        if random.randint(0, 100) < 30:
+            room = self.dungeon_map.rooms[random.randint(0, len(self.dungeon_map.rooms)-1)]
+            x, y = room.center()
+            x += 1
+            if 0 <= x < self.map_width:
+                terminal = Entity(x, y, 'L', COLOR_NEON_CYAN, "Lore Terminal")
+                terminal.is_lore = True
+                self.entities.append(terminal)
 
     def spawn_merchant(self):
         if random.randint(0, 100) < 50:
@@ -270,6 +332,8 @@ class Game:
 
     def update_fov(self):
         radius = 5
+        if self.level_modifier == "LIGHTS OUT":
+            radius = 2
         for y in range(max(0, self.player.y - radius), min(self.map_height, self.player.y + radius + 1)):
             for x in range(max(0, self.player.x - radius), min(self.map_width, self.player.x + radius + 1)):
                 self.dungeon_map.explored[y][x] = True
@@ -357,6 +421,42 @@ class Game:
         if len(self.messages) > 5:
             self.messages.pop(0)
 
+    def lore_menu(self):
+        lore_entries = [
+            "The Neon Slums were built over the ruins of the Old Data Center.",
+            "Glitch-Units are corrupted security bots from the Pre-Collapse era.",
+            "The NEON OVERLORD was once the central AI of the city.",
+            "Nanites are the only currency that survived the great system crash.",
+            "Legend says The Mainframe contains the source code of reality."
+        ]
+        text = random.choice(lore_entries)
+
+        self.stdscr.nodelay(False)
+        menu_h, menu_w = 8, 50
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.addstr(1, 2, "--- DATA DECRYPTION ---", curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
+
+        # Wrap text manually
+        words = text.split()
+        line = ""
+        row = 3
+        for word in words:
+            if len(line) + len(word) + 1 < menu_w - 4:
+                line += word + " "
+            else:
+                win.addstr(row, 2, line)
+                line = word + " "
+                row += 1
+        win.addstr(row, 2, line)
+
+        win.addstr(menu_h - 2, 2, "Press any key to close")
+        win.refresh()
+        win.getch()
+        self.stdscr.nodelay(True)
+        self.message("Data Log Decrypted.")
+
     def merchant_menu(self):
         items = [
             ("Repair Kit", 15, "heal"),
@@ -429,6 +529,7 @@ class Game:
                 "memory": self.player.memory,
                 "max_memory": self.player.max_memory,
                 "nanites": self.player.nanites,
+                "level_modifier": self.level_modifier,
                 "perks": getattr(self.player, 'perks', []),
                 "inventory": [
                     {
@@ -462,7 +563,10 @@ class Game:
                     "atk": e.atk,
                     "defense": e.defense,
                     "is_item": hasattr(e, 'is_item'),
-                    "item_type": getattr(e, 'item_type', None)
+                    "item_type": getattr(e, 'item_type', None),
+                    "is_merchant": hasattr(e, 'is_merchant'),
+                    "is_lore": hasattr(e, 'is_lore'),
+                    "ai_type": getattr(e, 'ai_type', None)
                 } for e in self.entities if e != self.player
             ],
             "map": {
@@ -485,6 +589,7 @@ class Game:
             save_data = json.load(f)
 
         self.depth = save_data.get("depth", 1)
+        self.level_modifier = save_data["player"].get("level_modifier")
         map_data = save_data["map"]
         self.dungeon_map = Map(map_data["width"], map_data["height"])
         self.dungeon_map.tiles = map_data["tiles"]
@@ -522,6 +627,12 @@ class Game:
             if e_data.get("is_item"):
                 entity.is_item = True
                 entity.item_type = e_data.get("item_type")
+            if e_data.get("is_merchant"):
+                entity.is_merchant = True
+            if e_data.get("is_lore"):
+                entity.is_lore = True
+            if e_data.get("ai_type"):
+                entity.ai_type = e_data["ai_type"]
             self.entities.append(entity)
 
         self.message("Game Loaded!")
@@ -542,12 +653,16 @@ class Game:
             if self.player.memory >= 10:
                 self.player.memory -= 10
                 self.message("Netrunner: Nova Burst! All enemies damaged.")
+                to_remove = []
                 for e in self.entities:
-                    if e != self.player and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant'):
+                    if e != self.player and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant') and not hasattr(e, 'is_lore'):
                         e.hp -= 10
                         if e.hp <= 0:
                             self.message(f"{e.name} fried!")
-                            self.entities.remove(e)
+                            to_remove.append(e)
+                for e in to_remove:
+                    if e in self.entities:
+                        self.entities.remove(e)
             else:
                 self.message("Not enough Memory!")
 
@@ -589,6 +704,8 @@ class Game:
                     self.pick_up(target)
                 elif hasattr(target, 'is_merchant'):
                     self.merchant_menu()
+                elif hasattr(target, 'is_lore'):
+                    self.lore_menu()
                 else:
                     self.attack(self.player, target)
 
@@ -659,6 +776,9 @@ class Game:
     def attack(self, attacker, target):
         if target == self.player:
             curses.flash()
+
+        target.vfx_char = '*'
+        target.vfx_timer = 5
         multiplier = 1
         if attacker == self.player and hasattr(self.player, 'next_attack_multiplier'):
             multiplier = self.player.next_attack_multiplier
@@ -697,6 +817,8 @@ class Game:
                 attacker.xp += 5
                 if attacker == self.player:
                     gain = random.randint(1, 5) + self.depth
+                    if self.level_modifier == "NANITE SURGE":
+                        gain *= 2
                     self.player.nanites += gain
                     self.message(f"Found {gain} Nanites.")
                 if attacker.xp >= attacker.level * 10:
@@ -779,10 +901,11 @@ class Game:
 
             dx, dy = 0, 0
             if ai_type == 'chase' or (ai_type == 'ranged' and dist > 4):
-                if entity.x < self.player.x: dx = 1
-                elif entity.x > self.player.x: dx = -1
-                elif entity.y < self.player.y: dy = 1
-                elif entity.y > self.player.y: dy = -1
+                path = self.dungeon_map.get_path((entity.x, entity.y), (self.player.x, self.player.y))
+                if path:
+                    next_step = path[0]
+                    dx = next_step[0] - entity.x
+                    dy = next_step[1] - entity.y
             elif ai_type == 'ranged' and dist <= 3:
                 # Try to move away
                 if entity.x < self.player.x: dx = -1
@@ -798,10 +921,35 @@ class Game:
             elif can_shoot:
                 self.attack(entity, self.player)
 
+    def record_score(self):
+        score_data = {
+            "class": self.player.player_class,
+            "depth": self.depth,
+            "level": self.player.level,
+            "nanites": self.player.nanites
+        }
+        scores = []
+        if os.path.exists("highscores.json"):
+            with open("highscores.json", "r") as f:
+                scores = json.load(f)
+        scores.append(score_data)
+        scores = sorted(scores, key=lambda x: x["depth"], reverse=True)[:5]
+        with open("highscores.json", "w") as f:
+            json.dump(scores, f)
+
     def update(self):
+        for entity in self.entities:
+            if entity.vfx_timer > 0:
+                entity.vfx_timer -= 1
+            else:
+                entity.vfx_char = None
+
         if self.player.hp <= 0:
             if "GAME OVER" not in self.messages[-1]:
                 self.message("GAME OVER! Press 'q' to quit.")
+                self.record_score()
+                if os.path.exists("savegame.json"):
+                    os.remove("savegame.json")
             self.player.char = 'X'
 
     def draw(self):
@@ -856,8 +1004,15 @@ class Game:
             if 0 <= entity.x < self.screen_width and 0 <= entity.y < self.screen_height:
                 if entity.y == self.screen_height - 1 and entity.x == self.screen_width - 1:
                     continue
+
+                char = entity.char
+                color = curses.color_pair(entity.color) | curses.A_BOLD
+                if entity.vfx_char:
+                    char = entity.vfx_char
+                    color = curses.color_pair(COLOR_NEON_RED) | curses.A_BOLD
+
                 try:
-                    self.stdscr.addch(entity.y, entity.x, entity.char, curses.color_pair(entity.color) | curses.A_BOLD)
+                    self.stdscr.addch(entity.y, entity.x, char, color)
                 except curses.error:
                     pass
 
@@ -868,6 +1023,8 @@ class Game:
             if self.depth > 5: sector = "DATA HIVE"
             if self.depth > 10: sector = "THE MAINFRAME"
             header = f"NEON DUNGEON | SECTOR: {sector} | DEPTH: {self.depth}"
+            if self.level_modifier:
+                header += f" | GLITCH: {self.level_modifier}"
             self.stdscr.addstr(ui_y, 0, header[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
         if ui_y + 1 < self.screen_height:
             stats = f"[{self.player.player_class}] LVL: {self.player.level} | HP: {self.player.hp}/{self.player.max_hp} | ATK: {self.player.atk} | DEF: {self.player.defense} | XP: {self.player.xp}/{self.player.level*10} | N: {self.player.nanites}"
@@ -888,6 +1045,8 @@ class Game:
         while self.running:
             self.update_fov()
             self.handle_input()
+            if self.level_modifier == "OVERCLOCKED":
+                self.enemy_turn()
             self.update()
             self.draw()
             curses.napms(33) # ~30 FPS
@@ -895,6 +1054,12 @@ class Game:
 def show_splash(stdscr):
     stdscr.erase()
     h, w = stdscr.getmaxyx()
+
+    # Load High Scores
+    high_scores = []
+    if os.path.exists("highscores.json"):
+        with open("highscores.json", "r") as f:
+            high_scores = json.load(f)
     splash = [
         r" _   _  _____ _____ _   _ ",
         r"| \ | ||  ___|  _  | \ | |",
@@ -914,9 +1079,15 @@ def show_splash(stdscr):
         if i < h:
             stdscr.addstr(i + 2, (w - len(line)) // 2, line, curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
 
+    if high_scores:
+        stdscr.addstr(len(splash) + 3, (w - 20) // 2, "--- TOP RECORDS ---", curses.color_pair(COLOR_NEON_YELLOW))
+        for i, s in enumerate(high_scores):
+            score_line = f"{s['class']} | Depth: {s['depth']} | Lvl: {s['level']}"
+            stdscr.addstr(len(splash) + 4 + i, (w - len(score_line)) // 2, score_line, curses.color_pair(COLOR_NEON_CYAN))
+
     msg = "PRESS ANY KEY TO START"
-    if h > len(splash) + 4:
-        stdscr.addstr(len(splash) + 5, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BLINK)
+    if h > len(splash) + 10:
+        stdscr.addstr(h - 2, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BLINK)
     stdscr.refresh()
     stdscr.nodelay(False)
     stdscr.getch()
