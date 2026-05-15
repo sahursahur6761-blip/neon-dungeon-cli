@@ -372,6 +372,16 @@ class Game:
         self.spawn_merchant()
         self.spawn_lore_terminal()
         self.spawn_explosives()
+        self.spawn_hacked_terminal()
+
+    def spawn_hacked_terminal(self):
+        if random.randint(0, 100) < 20:
+            room = self.dungeon_map.rooms[random.randint(0, len(self.dungeon_map.rooms)-1)]
+            pos = self.find_empty_tile_in_room(room)
+            if pos:
+                terminal = Entity(pos[0], pos[1], 'H', COLOR_NEON_GREEN, "Hacked Terminal")
+                terminal.is_hacked = True
+                self.entities.append(terminal)
 
     def spawn_explosives(self):
         for room in self.dungeon_map.rooms:
@@ -541,6 +551,35 @@ class Game:
         self.messages.append((text, color))
         if len(self.messages) > 5:
             self.messages.pop(0)
+
+    def hacked_menu(self):
+        buffs = [
+            ("Overdrive", "ATK temporarily boosted (+5)"),
+            ("Fortify", "DEF temporarily boosted (+3)"),
+            ("Nano-Regen", "HP fully restored")
+        ]
+        text = "SUCCESS! SYSTEM BYPASSED."
+
+        self.stdscr.nodelay(False)
+        menu_h, menu_w = 8, 50
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.addstr(1, 2, "--- HACKING RESULTS ---", curses.color_pair(COLOR_NEON_GREEN) | curses.A_BOLD)
+        win.addstr(2, 2, text)
+
+        buff = random.choice(buffs)
+        win.addstr(4, 2, f"Granting {buff[0]}: {buff[1]}", curses.color_pair(COLOR_NEON_CYAN))
+
+        if buff[0] == "Overdrive": self.player.base_atk += 5
+        elif buff[0] == "Fortify": self.player.base_defense += 3
+        elif buff[0] == "Nano-Regen": self.player.hp = self.player.max_hp
+
+        win.addstr(menu_h - 2, 2, "Press any key to close")
+        win.refresh()
+        win.getch()
+        self.stdscr.nodelay(True)
+        self.message(f"Hacked: {buff[0]} ACTIVE.")
 
     def lore_menu(self):
         lore_entries = [
@@ -867,6 +906,9 @@ class Game:
                     self.merchant_menu()
                 elif hasattr(target, 'is_lore'):
                     self.lore_menu()
+                elif hasattr(target, 'is_hacked'):
+                    self.hacked_menu()
+                    self.entities.remove(target)
                 else:
                     self.attack(self.player, target)
 
@@ -906,6 +948,12 @@ class Game:
             for i, item in enumerate(self.player.inventory):
                 attr = curses.A_REVERSE if i == selected else curses.A_NORMAL
                 win.addstr(3 + i, 2, f"{item.name} ({item.item_type})", attr)
+
+            # Show details of selected item
+            sel_item = self.player.inventory[selected]
+            detail = f"Details: Power +{getattr(sel_item, 'power', 0)}"
+            if sel_item.item_type == 'weapon': detail += f" ({getattr(sel_item, 'weapon_type', 'melee')})"
+            win.addstr(menu_h - 4, 2, detail, curses.color_pair(COLOR_NEON_CYAN))
 
             win.addstr(menu_h - 2, 2, "Enter: Equip | 'q': Exit")
             win.refresh()
@@ -1371,7 +1419,9 @@ def show_splash(stdscr):
 
     msg = "SPACE to Start | 'h' Hub | 'a' Achievements | '?' Help | 'q' Quit"
     if h > len(splash) + 10:
-        stdscr.addstr(h - 2, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW))
+        stdscr.addstr(h - 3, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW))
+        install_msg = "Global command available after install: neon-dungeon"
+        stdscr.addstr(h - 2, (w - len(install_msg)) // 2, install_msg, curses.A_DIM)
     stdscr.refresh()
     stdscr.nodelay(False)
     while True:

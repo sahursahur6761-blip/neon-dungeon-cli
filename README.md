@@ -2,6 +2,16 @@
 
 An offline Python terminal roguelite game.
 
+## 🚀 Quick Start (Global Install)
+Run this command in the repository root:
+```bash
+pip install .
+```
+Now you can start the game from anywhere by typing:
+```bash
+neon-dungeon
+```
+
 ## Features
 - **3 Unique Classes**: Cyberslasher, Tank, and Netrunner.
 - **Persistent Meta-Progression**: Buy permanent upgrades in the Synapse Hub.
