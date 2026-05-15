@@ -119,6 +119,11 @@ class Entity:
         self.level = level
         self.xp = xp
         self.equipment = {"weapon": None, "armor": None}
+        self.inventory = []
+        self.nanites = 0
+        self.player_class = None
+        self.max_memory = 0
+        self.memory = 0
 
     @property
     def atk(self):
@@ -163,7 +168,6 @@ class Game:
         self.running = True
         init_colors()
         curses.curs_set(0)
-        self.stdscr.nodelay(True)
 
         self.screen_height, self.screen_width = self.stdscr.getmaxyx()
         self.map_width = self.screen_width
@@ -174,11 +178,60 @@ class Game:
         self.dungeon_map.generate_map()
 
         start_room_center = self.dungeon_map.rooms[0].center()
-        self.player = Entity(start_room_center[0], start_room_center[1], '@', COLOR_NEON_GREEN, "Player", hp=20, atk=5, defense=2)
+        self.player = Entity(start_room_center[0], start_room_center[1], '@', COLOR_NEON_GREEN, "Player")
+
+        # Check for save game first
+        if os.path.exists("savegame.json"):
+            self.load_game()
+        else:
+            self.class_selection()
+
         self.entities = [self.player]
         self.messages = ["Welcome to the Neon Dungeon!"]
-
+        self.stdscr.nodelay(True)
         self.spawn_level_content()
+
+    def class_selection(self):
+        classes = [
+            ("Cyberslasher", "High ATK, Low DEF", 25, 8, 1, 0),
+            ("Tank", "High HP and DEF", 45, 4, 4, 0),
+            ("Netrunner", "Balanced, high Memory", 20, 5, 2, 20)
+        ]
+
+        self.stdscr.nodelay(False)
+        menu_h, menu_w = 12, 50
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.keypad(True)
+
+        selected = 0
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, "--- SELECT YOUR CYBER-CLASS ---", curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
+            for i, (name, desc, hp, atk, df, mem) in enumerate(classes):
+                attr = curses.A_REVERSE if i == selected else curses.A_NORMAL
+                win.addstr(3 + i*2, 2, f"{name}: {desc}", attr)
+                win.addstr(4 + i*2, 4, f"HP: {hp} | ATK: {atk} | DEF: {df} | MEM: {mem}", curses.A_DIM)
+
+            win.refresh()
+            key = win.getch()
+            if key == curses.KEY_UP:
+                selected = (selected - 1) % 3
+            elif key == curses.KEY_DOWN:
+                selected = (selected + 1) % 3
+            elif key in [10, 13, ord(' ')]:
+                name, _, hp, atk, df, mem = classes[selected]
+                self.player.player_class = name
+                self.player.max_hp = hp
+                self.player.hp = hp
+                self.player.base_atk = atk
+                self.player.base_defense = df
+                self.player.max_memory = mem
+                self.player.memory = mem
+                break
+        self.stdscr.nodelay(True)
 
     def next_level(self):
         self.depth += 1
@@ -195,6 +248,17 @@ class Game:
         self.spawn_enemies()
         self.spawn_items()
         self.spawn_hazards()
+        self.spawn_merchant()
+
+    def spawn_merchant(self):
+        if random.randint(0, 100) < 50:
+            room = self.dungeon_map.rooms[random.randint(1, len(self.dungeon_map.rooms)-1)]
+            x, y = room.center()
+            x -= 2
+            if 0 <= x < self.map_width:
+                merchant = Entity(x, y, 'M', COLOR_NEON_YELLOW, "Merchant Terminal")
+                merchant.is_merchant = True
+                self.entities.append(merchant)
 
     def spawn_hazards(self):
         for room in self.dungeon_map.rooms:
@@ -254,6 +318,8 @@ class Game:
     def spawn_enemies(self):
         if self.depth % 5 == 0:
             # Boss level!
+            self.message("WARNING: SECTOR BOSS DETECTED!")
+            curses.beep()
             room = self.dungeon_map.rooms[-1]
             x, y = room.center()
             boss = Entity(x, y, 'B', COLOR_NEON_RED, "NEON OVERLORD",
@@ -291,10 +357,67 @@ class Game:
         if len(self.messages) > 5:
             self.messages.pop(0)
 
+    def merchant_menu(self):
+        items = [
+            ("Repair Kit", 15, "heal"),
+            ("Power Module", 40, "weapon"),
+            ("Armor Plate", 40, "armor")
+        ]
+
+        self.stdscr.nodelay(False)
+        menu_h, menu_w = 10, 40
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.keypad(True)
+
+        selected = 0
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, f"--- MERCHANT [NANITES: {self.player.nanites}] ---", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+            for i, (name, price, _) in enumerate(items):
+                attr = curses.A_REVERSE if i == selected else curses.A_NORMAL
+                color = curses.color_pair(COLOR_NEON_GREEN) if self.player.nanites >= price else curses.color_pair(COLOR_NEON_RED)
+                win.addstr(3 + i, 2, f"{name}: {price} N", attr | color)
+
+            win.addstr(menu_h - 2, 2, "Press 'q' to Exit")
+            win.refresh()
+            key = win.getch()
+            if key == curses.KEY_UP:
+                selected = (selected - 1) % len(items)
+            elif key == curses.KEY_DOWN:
+                selected = (selected + 1) % len(items)
+            elif key in [10, 13, ord(' ')]:
+                name, price, itype = items[selected]
+                if self.player.nanites >= price:
+                    self.player.nanites -= price
+                    if itype == "heal":
+                        self.player.hp = min(self.player.max_hp, self.player.hp + 20)
+                        self.message(f"Bought {name}!")
+                    elif itype == "weapon":
+                        w = Entity(0,0, '!', COLOR_NEON_YELLOW, "Rare Pulse Blade")
+                        w.item_type = "weapon"
+                        w.power = 5
+                        self.player.equipment["weapon"] = w
+                        self.message(f"Bought {name}!")
+                    elif itype == "armor":
+                        a = Entity(0,0, '[', COLOR_NEON_YELLOW, "Rare Nano-Suit")
+                        a.item_type = "armor"
+                        a.power = 3
+                        self.player.equipment["armor"] = a
+                        self.message(f"Bought {name}!")
+                else:
+                    self.message("Not enough Nanites!")
+            elif key == ord('q'):
+                break
+        self.stdscr.nodelay(True)
+
     def save_game(self):
         save_data = {
             "depth": self.depth,
             "player": {
+                "player_class": self.player.player_class,
                 "x": self.player.x,
                 "y": self.player.y,
                 "hp": self.player.hp,
@@ -303,7 +426,19 @@ class Game:
                 "base_defense": self.player.base_defense,
                 "level": self.player.level,
                 "xp": self.player.xp,
+                "memory": self.player.memory,
+                "max_memory": self.player.max_memory,
+                "nanites": self.player.nanites,
                 "perks": getattr(self.player, 'perks', []),
+                "inventory": [
+                    {
+                        "name": item.name,
+                        "power": item.power,
+                        "color": item.color,
+                        "char": item.char,
+                        "item_type": item.item_type
+                    } for item in self.player.inventory
+                ],
                 "equipment": {
                     slot: {
                         "name": item.name,
@@ -360,7 +495,17 @@ class Game:
                              hp=p_data["hp"], atk=p_data["base_atk"], defense=p_data["base_defense"],
                              level=p_data["level"], xp=p_data["xp"])
         self.player.max_hp = p_data["max_hp"]
+        self.player.player_class = p_data.get("player_class")
+        self.player.memory = p_data.get("memory", 0)
+        self.player.max_memory = p_data.get("max_memory", 0)
+        self.player.nanites = p_data.get("nanites", 0)
         self.player.perks = p_data.get("perks", [])
+        self.player.inventory = []
+        for item_data in p_data.get("inventory", []):
+            item = Entity(0, 0, item_data["char"], item_data["color"], item_data["name"])
+            item.item_type = item_data["item_type"]
+            item.power = item_data["power"]
+            self.player.inventory.append(item)
 
         for slot, item_data in p_data.get("equipment", {}).items():
             if item_data:
@@ -381,6 +526,31 @@ class Game:
 
         self.message("Game Loaded!")
 
+    def use_skill(self):
+        if self.player.player_class == "Cyberslasher":
+            cost = 0 # Passive-ish or free for now
+            self.message("Cyberslasher: Next attack deals double damage!")
+            self.player.next_attack_multiplier = 2
+        elif self.player.player_class == "Tank":
+            if self.player.memory >= 5:
+                self.player.memory -= 5
+                self.message("Tank: Nano-Fortify! DEF increased.")
+                self.player.base_defense += 1
+            else:
+                self.message("Not enough Memory!")
+        elif self.player.player_class == "Netrunner":
+            if self.player.memory >= 10:
+                self.player.memory -= 10
+                self.message("Netrunner: Nova Burst! All enemies damaged.")
+                for e in self.entities:
+                    if e != self.player and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant'):
+                        e.hp -= 10
+                        if e.hp <= 0:
+                            self.message(f"{e.name} fried!")
+                            self.entities.remove(e)
+            else:
+                self.message("Not enough Memory!")
+
     def handle_input(self):
         if self.player.hp <= 0:
             key = self.stdscr.getch()
@@ -395,6 +565,10 @@ class Game:
 
         if key == ord('q'):
             self.running = False
+        elif key == ord('e'):
+            self.use_skill()
+        elif key == ord('i'):
+            self.inventory_menu()
         elif key == ord('v'):
             self.save_game()
         elif key == ord('l'):
@@ -413,6 +587,8 @@ class Game:
             if target:
                 if hasattr(target, 'is_item'):
                     self.pick_up(target)
+                elif hasattr(target, 'is_merchant'):
+                    self.merchant_menu()
                 else:
                     self.attack(self.player, target)
 
@@ -426,19 +602,68 @@ class Game:
                     self.player.hp -= 3
                 self.enemy_turn()
 
+    def inventory_menu(self):
+        if not self.player.inventory:
+            self.message("Inventory empty!")
+            return
+
+        self.stdscr.nodelay(False)
+        menu_h, menu_w = 12, 40
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.keypad(True)
+
+        selected = 0
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, "--- BACKPACK ---", curses.color_pair(COLOR_NEON_MAGENTA) | curses.A_BOLD)
+            for i, item in enumerate(self.player.inventory):
+                attr = curses.A_REVERSE if i == selected else curses.A_NORMAL
+                win.addstr(3 + i, 2, f"{item.name} ({item.item_type})", attr)
+
+            win.addstr(menu_h - 2, 2, "Enter: Equip | 'q': Exit")
+            win.refresh()
+            key = win.getch()
+            if key == curses.KEY_UP:
+                selected = (selected - 1) % len(self.player.inventory)
+            elif key == curses.KEY_DOWN:
+                selected = (selected + 1) % len(self.player.inventory)
+            elif key in [10, 13, ord(' ')]:
+                item = self.player.inventory[selected]
+                if item.item_type == "weapon":
+                    self.player.equipment["weapon"] = item
+                    self.message(f"Equipped {item.name}!")
+                elif item.item_type == "armor":
+                    self.player.equipment["armor"] = item
+                    self.message(f"Equipped {item.name}!")
+                break
+            elif key == ord('q'):
+                break
+        self.stdscr.nodelay(True)
+
     def pick_up(self, item):
         if item.item_type == 'heal':
             self.message(f"Used {item.name}! +10 HP.")
             self.player.hp = min(self.player.max_hp, self.player.hp + 10)
-        elif item.item_type == 'weapon':
-            self.player.equipment["weapon"] = item
-            self.message(f"Equipped {item.name}!")
-        elif item.item_type == 'armor':
-            self.player.equipment["armor"] = item
-            self.message(f"Equipped {item.name}!")
+        else:
+            if len(self.player.inventory) < 5:
+                self.player.inventory.append(item)
+                self.message(f"Stored {item.name} in backpack.")
+            else:
+                self.message("Backpack full!")
+                return
         self.entities.remove(item)
 
     def attack(self, attacker, target):
+        if target == self.player:
+            curses.flash()
+        multiplier = 1
+        if attacker == self.player and hasattr(self.player, 'next_attack_multiplier'):
+            multiplier = self.player.next_attack_multiplier
+            self.player.next_attack_multiplier = 1
+
         # Dodge check
         dodge_chance = 0.05
         if hasattr(target, 'perks') and "evade" in target.perks:
@@ -453,9 +678,11 @@ class Game:
         is_crit = random.random() < crit_chance
 
         damage = max(0, attacker.atk - target.defense)
+        damage = int(damage * multiplier)
         if is_crit:
             damage = int(damage * 1.5)
-            self.message(f"CRITICAL HIT!")
+            self.message("CRITICAL HIT!")
+            curses.beep()
 
         target.hp -= damage
         self.message(f"{attacker.name} hits {target.name} for {damage}!")
@@ -468,6 +695,10 @@ class Game:
             if target != self.player:
                 self.entities.remove(target)
                 attacker.xp += 5
+                if attacker == self.player:
+                    gain = random.randint(1, 5) + self.depth
+                    self.player.nanites += gain
+                    self.message(f"Found {gain} Nanites.")
                 if attacker.xp >= attacker.level * 10:
                     self.level_up(attacker)
 
@@ -535,6 +766,10 @@ class Game:
         self.message(f"Selected Perk: {perk_name}!")
 
     def enemy_turn(self):
+        # Regenerate memory for Netrunner
+        if self.player.player_class == "Netrunner":
+            self.player.memory = min(self.player.max_memory, self.player.memory + 1)
+
         for entity in self.entities:
             if entity == self.player or hasattr(entity, 'is_item'):
                 continue
@@ -572,6 +807,16 @@ class Game:
     def draw(self):
         self.stdscr.erase()
 
+        # Sector Colors
+        wall_color = COLOR_NEON_MAGENTA
+        floor_color = COLOR_NEON_CYAN
+        if self.depth > 5:
+            wall_color = COLOR_NEON_YELLOW
+            floor_color = COLOR_NEON_GREEN
+        if self.depth > 10:
+            wall_color = COLOR_NEON_RED
+            floor_color = COLOR_NEON_MAGENTA
+
         # Draw Map
         for y in range(min(self.map_height, self.screen_height)):
             for x in range(min(self.map_width, self.screen_width)):
@@ -582,13 +827,13 @@ class Game:
                     continue
 
                 char = self.dungeon_map.tiles[y][x]
-                color = curses.color_pair(COLOR_NEON_CYAN)
+                color = curses.color_pair(floor_color)
 
                 dist = abs(self.player.x - x) + abs(self.player.y - y)
                 is_visible = dist < 7
 
                 if char == '#':
-                    color = curses.color_pair(COLOR_NEON_MAGENTA)
+                    color = curses.color_pair(wall_color)
                 elif char == '>':
                     color = curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD
                 elif char == '^':
@@ -619,13 +864,18 @@ class Game:
         # Draw UI
         ui_y = self.map_height + 1
         if ui_y < self.screen_height:
-            header = f"NEON DUNGEON CLI | DEPTH: {self.depth}"
+            sector = "NEON SLUMS"
+            if self.depth > 5: sector = "DATA HIVE"
+            if self.depth > 10: sector = "THE MAINFRAME"
+            header = f"NEON DUNGEON | SECTOR: {sector} | DEPTH: {self.depth}"
             self.stdscr.addstr(ui_y, 0, header[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
         if ui_y + 1 < self.screen_height:
-            stats = f"LVL: {self.player.level} | HP: {self.player.hp}/{self.player.max_hp} | ATK: {self.player.atk} | DEF: {self.player.defense} | XP: {self.player.xp}/{self.player.level*10}"
+            stats = f"[{self.player.player_class}] LVL: {self.player.level} | HP: {self.player.hp}/{self.player.max_hp} | ATK: {self.player.atk} | DEF: {self.player.defense} | XP: {self.player.xp}/{self.player.level*10} | N: {self.player.nanites}"
+            if self.player.max_memory > 0:
+                stats += f" | MEM: {self.player.memory}/{self.player.max_memory}"
             self.stdscr.addstr(ui_y + 1, 0, stats[:self.screen_width-1], curses.color_pair(COLOR_NEON_CYAN))
         if ui_y + 2 < self.screen_height:
-            controls = "Controls: WASD/Arrows to Move | 'v' Save | 'l' Load | 'q' Quit"
+            controls = "WASD Move | 'i' Inv | 'e' Skill | 'v' Save | 'l' Load | 'q' Quit"
             self.stdscr.addstr(ui_y + 2, 0, controls[:self.screen_width-1], curses.color_pair(COLOR_NEON_MAGENTA))
 
         for i, msg in enumerate(self.messages):
