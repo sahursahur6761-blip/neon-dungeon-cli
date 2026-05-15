@@ -180,6 +180,7 @@ class Entity:
         self.equipment = {"weapon": None, "armor": None}
         self.augmentations = []
         self.inventory = []
+        self.drone = None
         self.nanites = 0
         self.player_class = None
         self.max_memory = 0
@@ -477,7 +478,7 @@ class Game:
 
     def spawn_items(self):
         for room in self.dungeon_map.rooms[1:]:
-            if random.randint(0, 100) < 55:
+            if random.randint(0, 100) < 60:
                 pos = self.find_empty_tile_in_room(room)
                 if not pos: continue
                 x, y = pos
@@ -514,7 +515,7 @@ class Game:
                     item = Entity(x, y, '[', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
                     item.item_type = 'armor'
                     item.power = power
-                elif roll < 90:
+                elif roll < 85:
                     rarity_roll = random.randint(0, 100)
                     if rarity_roll < 70:
                         rarity, power, name, color = "Common", 5, "Neural Link", COLOR_NEON_CYAN
@@ -524,9 +525,13 @@ class Game:
                     item = Entity(x, y, '&', color, f"{rarity} {name}", hp=0, atk=0, defense=0)
                     item.item_type = 'augmentation'
                     item.power = power # Represents crit bonus %
-                elif roll < 97:
+                elif roll < 93:
                     item = Entity(x, y, 'S', COLOR_NEON_YELLOW, "Sonar Pulse")
                     item.item_type = 'revealer'
+                elif roll < 97:
+                    item = Entity(x, y, 'd', COLOR_NEON_CYAN, "Cyber-Drone")
+                    item.item_type = 'drone'
+                    item.base_atk = 3
                 else:
                     item = Entity(x, y, '?', COLOR_NEON_WHITE, "Glitched Junk")
                     item.item_type = 'junk'
@@ -726,6 +731,14 @@ class Game:
                 "max_memory": self.player.max_memory,
                 "nanites": self.player.nanites,
                 "level_modifier": self.level_modifier,
+                "drone": {
+                    "name": self.player.drone.name,
+                    "base_atk": self.player.drone.base_atk,
+                    "x": self.player.drone.x,
+                    "y": self.player.drone.y,
+                    "color": self.player.drone.color,
+                    "char": self.player.drone.char
+                } if self.player.drone else None,
                 "perks": getattr(self.player, 'perks', []),
                 "augmentations": [
                     {
@@ -813,6 +826,12 @@ class Game:
         self.player.memory = p_data.get("memory", 0)
         self.player.max_memory = p_data.get("max_memory", 0)
         self.player.nanites = p_data.get("nanites", 0)
+        d_data = p_data.get("drone")
+        if d_data:
+            drone = Entity(d_data["x"], d_data["y"], d_data["char"], d_data["color"], d_data["name"])
+            drone.base_atk = d_data["base_atk"]
+            self.player.drone = drone
+            self.entities.append(drone)
         self.player.perks = p_data.get("perks", [])
         self.player.augmentations = []
         for item_data in p_data.get("augmentations", []):
@@ -837,6 +856,9 @@ class Game:
                 self.player.equipment[slot] = item
 
         self.entities = [self.player]
+        if self.player.drone:
+            self.entities.append(self.player.drone)
+
         for e_data in save_data["entities"]:
             entity = Entity(e_data["x"], e_data["y"], e_data["char"], e_data["color"], e_data["name"],
                             hp=e_data["hp"], atk=e_data["atk"], defense=e_data["defense"])
@@ -1025,6 +1047,13 @@ class Game:
                 elif item.item_type == "armor":
                     self.player.equipment["armor"] = item
                     self.message(f"Equipped {item.name}!", COLOR_NEON_CYAN)
+                elif item.item_type == "drone":
+                    self.player.drone = item
+                    item.x, item.y = self.player.x, self.player.y
+                    if item not in self.entities:
+                        self.entities.append(item)
+                    self.player.inventory.pop(selected)
+                    self.message(f"Deployed {item.name}!", COLOR_NEON_GREEN)
                 break
             elif key == ord('q'):
                 break
@@ -1189,7 +1218,36 @@ class Game:
             self.player.perks.append("evade")
         self.message(f"Selected Perk: {perk_name}!")
 
+    def drone_turn(self):
+        if not self.player.drone:
+            return
+
+        drone = self.player.drone
+        # Follow player
+        dist = abs(drone.x - self.player.x) + abs(drone.y - self.player.y)
+        if dist > 1:
+            path = self.dungeon_map.get_path((drone.x, drone.y), (self.player.x, self.player.y))
+            if path:
+                drone.x, drone.y = path[0]
+
+        # Auto-fire at nearest enemy
+        target = None
+        min_dist = 5
+        for e in self.entities:
+            if e != self.player and e != drone and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant') and not hasattr(e, 'is_lore'):
+                d = abs(e.x - drone.x) + abs(e.y - drone.y)
+                if d < min_dist:
+                    min_dist = d
+                    target = e
+
+        if target:
+            self.message(f"Drone fires at {target.name}!", COLOR_NEON_CYAN)
+            self.attack(drone, target)
+
     def enemy_turn(self):
+        # Drone acts first
+        self.drone_turn()
+
         # Regenerate memory for Netrunner
         if self.player.player_class == "Netrunner":
             self.player.memory = min(self.player.max_memory, self.player.memory + 1)
@@ -1230,6 +1288,21 @@ class Game:
             elif can_shoot:
                 self.attack(entity, self.player)
 
+    def export_summary(self):
+        summary_text = f"""
+--- NEON DUNGEON RUN SUMMARY ---
+Character: {self.player.name} ({self.player.player_class})
+Sector Depth: {self.depth}
+Run Seed: {self.seed}
+Level: {self.player.level}
+Kills: {self.player.kills}
+Nanites: {self.player.nanites}
+--------------------------------
+"""
+        with open("last_run.txt", "w") as f:
+            f.write(summary_text)
+        self.message("Summary exported to last_run.txt", COLOR_NEON_CYAN)
+
     def show_run_summary(self):
         self.stdscr.nodelay(False)
         menu_h, menu_w = 12, 50
@@ -1250,9 +1323,13 @@ class Game:
         for i, line in enumerate(summary):
             win.addstr(3 + i, 4, line, curses.color_pair(COLOR_NEON_CYAN))
 
+        win.addstr(menu_h - 3, (menu_w - 24) // 2, "Press 'x' to Export to file", curses.color_pair(COLOR_NEON_YELLOW))
         win.addstr(menu_h - 2, (menu_w - 22) // 2, "Press any key to exit", curses.A_DIM)
         win.refresh()
-        win.getch()
+        key = win.getch()
+        if key == ord('x'):
+            self.export_summary()
+            win.getch() # Wait again after message
         self.stdscr.nodelay(True)
 
     def record_score(self):
@@ -1398,6 +1475,36 @@ class Game:
         side_win.addstr(12, 2, f"W: {w_name[:20]}", curses.A_DIM)
         side_win.addstr(13, 2, f"A: {a_name[:20]}", curses.A_DIM)
 
+        # Combat Scanner (ASCII Art)
+        nearest_enemy = None
+        min_dist = 6
+        for e in self.entities:
+            if e != self.player and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant') and not hasattr(e, 'is_lore'):
+                d = abs(e.x - self.player.x) + abs(e.y - self.player.y)
+                if d < min_dist:
+                    min_dist = d
+                    nearest_enemy = e
+
+        if nearest_enemy:
+            try:
+                side_win.addstr(15, 2, "SCANNER:", curses.color_pair(COLOR_NEON_RED) | curses.A_BOLD)
+                side_win.addstr(16, 2, nearest_enemy.name[:20], curses.A_DIM)
+                art = [
+                    "  [X_X]  ",
+                    " /|___|\\ ",
+                    "  /   \\  "
+                ]
+                if hasattr(nearest_enemy, 'is_boss'):
+                    art = [
+                        " <[O_O]> ",
+                        "==|###|==",
+                        "  /###\\  "
+                    ]
+                for i, line in enumerate(art):
+                    side_win.addstr(17 + i, 2, line, curses.color_pair(COLOR_NEON_RED))
+            except curses.error:
+                pass
+
         # Log
         for i, (msg, color) in enumerate(self.messages):
             try: log_win.addstr(i + 1, 2, f"> {msg}"[:self.screen_width-4], curses.color_pair(color))
@@ -1468,9 +1575,9 @@ def show_splash(stdscr):
             stdscr.addstr(i + 2, (w - len(line)) // 2, line, curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
 
     if high_scores:
-        stdscr.addstr(len(splash) + 3, (w - 20) // 2, "--- TOP RECORDS ---", curses.color_pair(COLOR_NEON_YELLOW))
+        stdscr.addstr(len(splash) + 3, (w - 24) // 2, "--- SECTOR HALL OF FAME ---", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
         for i, s in enumerate(high_scores):
-            score_line = f"{s['class']} | Depth: {s['depth']} | Seed: {s.get('seed', '???')}"
+            score_line = f"#{i+1} {s['class']} - Depth {s['depth']} [Seed: {s.get('seed', '???')}]"
             stdscr.addstr(len(splash) + 4 + i, (w - len(score_line)) // 2, score_line, curses.color_pair(COLOR_NEON_CYAN))
 
     msg = "SPACE to Start | 'h' Hub | 'a' Achievements | '?' Help | 'q' Quit"

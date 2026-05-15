@@ -16,6 +16,11 @@ Now you can start the game from anywhere by typing:
 neon-dungeon
 ```
 
+### 🍎 Notes for macOS Users
+- Use `pip3 install .` if `pip` points to an older Python version.
+- If you see `command not found: neon-dungeon`, ensure your Python scripts directory (usually `~/Library/Python/3.x/bin`) is in your `$PATH`.
+- For the best experience, use **Terminal.app** or **iTerm2** with a dark theme and "Bright" ANSI colors enabled.
+
 ## Features
 - **3 Unique Classes**: Cyberslasher, Tank, and Netrunner.
 - **Persistent Meta-Progression**: Buy permanent upgrades in the Synapse Hub.
