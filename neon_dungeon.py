@@ -113,6 +113,12 @@ class Map:
             sx, sy = self.rooms[-1].center()
             self.tiles[sy][sx] = '>'
 
+        # Secret Room
+        if len(self.rooms) > 3:
+            r = self.rooms[1] # Room 1 is usually far from start/end
+            rx, ry = r.center()
+            self.tiles[ry][rx] = '?' # Secret cache
+
     def is_blocked(self, x, y):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return True
@@ -227,8 +233,12 @@ class Game:
         curses.curs_set(0)
 
         self.screen_height, self.screen_width = self.stdscr.getmaxyx()
-        self.map_width = self.screen_width
-        self.map_height = self.screen_height - 8
+        # Reserved space for Windows
+        self.log_h = 6
+        self.sidebar_w = 30
+
+        self.map_width = self.screen_width - self.sidebar_w - 1
+        self.map_height = self.screen_height - self.log_h - 2
 
         self.depth = 1
         self.level_modifier = None
@@ -254,8 +264,7 @@ class Game:
             self.load_game()
         else:
             self.class_selection()
-
-        self.entities = [self.player]
+            self.entities = [self.player]
         self.message("Welcome to the Neon Dungeon!", COLOR_NEON_CYAN)
         self.stdscr.nodelay(True)
         if not os.path.exists("savegame.json"):
@@ -394,6 +403,12 @@ class Game:
             for x in range(max(0, self.player.x - radius), min(self.map_width, self.player.x + radius + 1)):
                 self.dungeon_map.explored[y][x] = True
 
+    def reveal_map(self):
+        for y in range(self.map_height):
+            for x in range(self.map_width):
+                self.dungeon_map.explored[y][x] = True
+        self.message("Area Map Downloaded.", COLOR_NEON_CYAN)
+
     def spawn_items(self):
         for room in self.dungeon_map.rooms[1:]:
             if random.randint(0, 100) < 55:
@@ -433,7 +448,7 @@ class Game:
                     item = Entity(x, y, '[', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
                     item.item_type = 'armor'
                     item.power = power
-                elif roll < 95:
+                elif roll < 90:
                     rarity_roll = random.randint(0, 100)
                     if rarity_roll < 70:
                         rarity, power, name, color = "Common", 5, "Neural Link", COLOR_NEON_CYAN
@@ -443,8 +458,11 @@ class Game:
                     item = Entity(x, y, '&', color, f"{rarity} {name}", hp=0, atk=0, defense=0)
                     item.item_type = 'augmentation'
                     item.power = power # Represents crit bonus %
+                elif roll < 97:
+                    item = Entity(x, y, 'S', COLOR_NEON_YELLOW, "Sonar Pulse")
+                    item.item_type = 'revealer'
                 else:
-                    item = Entity(x, y, '?', COLOR_NEON_WHITE if hasattr(curses, 'COLOR_WHITE') else COLOR_NEON_CYAN, "Glitched Junk")
+                    item = Entity(x, y, '?', COLOR_NEON_WHITE, "Glitched Junk")
                     item.item_type = 'junk'
 
                 item.is_item = True
@@ -835,6 +853,10 @@ class Game:
             tile = self.dungeon_map.tiles[self.player.y][self.player.x]
             if tile == '>':
                 self.next_level()
+            elif tile == '?':
+                self.message("SECRET CACHE FOUND!", COLOR_NEON_YELLOW)
+                self.player.nanites += 50
+                self.dungeon_map.tiles[self.player.y][self.player.x] = '.'
             else:
                 if tile == '^':
                     self.message("OUCH! Stepped on a hazard!")
@@ -896,6 +918,8 @@ class Game:
         if item.item_type == 'heal':
             self.message(f"Used {item.name}! +10 HP.", COLOR_NEON_GREEN)
             self.player.hp = min(self.player.max_hp, self.player.hp + 10)
+        elif item.item_type == 'revealer':
+            self.reveal_map()
         else:
             if len(self.player.inventory) < 5:
                 self.player.inventory.append(item)
@@ -1151,6 +1175,15 @@ class Game:
     def draw(self):
         self.stdscr.erase()
 
+        # Windows
+        map_win = curses.newwin(self.map_height + 2, self.map_width + 2, 0, 0)
+        side_win = curses.newwin(self.map_height + 2, self.sidebar_w, 0, self.map_width + 2)
+        log_win = curses.newwin(self.log_h + 2, self.screen_width, self.map_height + 2, 0)
+
+        map_win.box()
+        side_win.box()
+        log_win.box()
+
         # Sector Colors
         wall_color = COLOR_NEON_MAGENTA
         floor_color = COLOR_NEON_CYAN
@@ -1162,106 +1195,61 @@ class Game:
             floor_color = COLOR_NEON_MAGENTA
 
         # Draw Map
-        for y in range(min(self.map_height, self.screen_height)):
-            for x in range(min(self.map_width, self.screen_width)):
-                if y == self.screen_height - 1 and x == self.screen_width - 1:
-                    continue
-
+        for y in range(self.map_height):
+            for x in range(self.map_width):
                 if not self.dungeon_map.explored[y][x]:
                     continue
 
                 char = self.dungeon_map.tiles[y][x]
                 color = curses.color_pair(floor_color)
-
                 dist = abs(self.player.x - x) + abs(self.player.y - y)
                 is_visible = dist < 7
 
-                if char == '#':
-                    color = curses.color_pair(wall_color)
-                elif char == '>':
-                    color = curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD
-                elif char == '^':
-                    color = curses.color_pair(COLOR_NEON_RED)
+                if char == '#': color = curses.color_pair(wall_color)
+                elif char == '>': color = curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD
+                elif char == '^': color = curses.color_pair(COLOR_NEON_RED)
 
-                try:
-                    self.stdscr.addch(y, x, char, color)
-                except curses.error:
-                    pass
+                try: map_win.addch(y + 1, x + 1, char, color)
+                except curses.error: pass
 
         # Draw Entities
         for entity in self.entities:
-            if not self.dungeon_map.explored[entity.y][entity.x]:
-                continue
-
+            if not self.dungeon_map.explored[entity.y][entity.x]: continue
             dist = abs(self.player.x - entity.x) + abs(self.player.y - entity.y)
-            if dist > 7 and entity != self.player:
-                continue
+            if dist > 7 and entity != self.player: continue
 
-            if 0 <= entity.x < self.screen_width and 0 <= entity.y < self.screen_height:
-                if entity.y == self.screen_height - 1 and entity.x == self.screen_width - 1:
-                    continue
-
+            if 0 <= entity.x < self.map_width and 0 <= entity.y < self.map_height:
                 char = entity.char
                 color = curses.color_pair(entity.color) | curses.A_BOLD
                 if entity.vfx_char:
                     char = entity.vfx_char
                     color = curses.color_pair(COLOR_NEON_RED) | curses.A_BOLD
+                try: map_win.addch(entity.y + 1, entity.x + 1, char, color)
+                except curses.error: pass
 
-                try:
-                    self.stdscr.addch(entity.y, entity.x, char, color)
-                except curses.error:
-                    pass
+        # Sidebar
+        side_win.addstr(1, 2, "STATUS", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+        side_win.addstr(3, 2, f"CLASS: {self.player.player_class}", curses.color_pair(COLOR_NEON_CYAN))
+        side_win.addstr(4, 2, f"DEPTH: {self.depth}", curses.color_pair(COLOR_NEON_CYAN))
+        side_win.addstr(6, 2, f"HP: {self.player.hp}/{self.player.max_hp}", curses.color_pair(COLOR_NEON_GREEN))
+        side_win.addstr(7, 2, f"ATK: {self.player.atk}", curses.color_pair(COLOR_NEON_CYAN))
+        side_win.addstr(8, 2, f"DEF: {self.player.defense}", curses.color_pair(COLOR_NEON_CYAN))
+        side_win.addstr(9, 2, f"NAN: {self.player.nanites}", curses.color_pair(COLOR_NEON_YELLOW))
 
-        # Draw UI
-        ui_y = self.map_height + 1
-        if ui_y < self.screen_height:
-            sector = "NEON SLUMS"
-            if self.depth > 5: sector = "DATA HIVE"
-            if self.depth > 10: sector = "THE MAINFRAME"
-            header = f"NEON DUNGEON | SECTOR: {sector} | DEPTH: {self.depth}"
-            if self.level_modifier:
-                header += f" | GLITCH: {self.level_modifier}"
-            self.stdscr.addstr(ui_y, 0, header[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
-        if ui_y + 1 < self.screen_height:
-            stats = f"[{self.player.player_class}] LVL: {self.player.level} | HP: {self.player.hp}/{self.player.max_hp} | ATK: {self.player.atk} | DEF: {self.player.defense} | XP: {self.player.xp}/{self.player.level*10} | N: {self.player.nanites}"
-            if self.player.max_memory > 0:
-                stats += f" | MEM: {self.player.memory}/{self.player.max_memory}"
-            if self.player.augmentations:
-                stats += f" | AUG: {len(self.player.augmentations)}/3"
-            self.stdscr.addstr(ui_y + 1, 0, stats[:self.screen_width-1], curses.color_pair(COLOR_NEON_CYAN))
-        if ui_y + 2 < self.screen_height:
-            controls = "WASD Move | 'f' Fire | 'i' Inv | 'e' Skill | 'v' Save | 'l' Load | 'q' Quit"
-            self.stdscr.addstr(ui_y + 2, 0, controls[:self.screen_width-1], curses.color_pair(COLOR_NEON_MAGENTA))
+        side_win.addstr(11, 2, "EQUIPMENT", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+        w_name = self.player.equipment["weapon"].name if self.player.equipment["weapon"] else "None"
+        a_name = self.player.equipment["armor"].name if self.player.equipment["armor"] else "None"
+        side_win.addstr(12, 2, f"W: {w_name[:20]}", curses.A_DIM)
+        side_win.addstr(13, 2, f"A: {a_name[:20]}", curses.A_DIM)
 
+        # Log
         for i, (msg, color) in enumerate(self.messages):
-            if ui_y + 3 + i < self.screen_height:
-                self.stdscr.addstr(ui_y + 3 + i, 0, f"> {msg}"[:self.screen_width-1], curses.color_pair(color))
+            try: log_win.addstr(i + 1, 2, f"> {msg}"[:self.screen_width-4], curses.color_pair(color))
+            except curses.error: pass
 
-        # Draw Minimap
-        mw, mh = 20, 10
-        mx, my = self.screen_width - mw - 1, 1
-        if mx > self.map_width // 2:
-            try:
-                mwin = curses.newwin(mh, mw, my, mx)
-                mwin.box()
-                for ry in range(mh - 2):
-                    for rx in range(mw - 2):
-                        # Map full dungeon to minimap
-                        map_x = int(rx * (self.map_width / (mw - 2)))
-                        map_y = int(ry * (self.map_height / (mh - 2)))
-                        if 0 <= map_x < self.map_width and 0 <= map_y < self.map_height:
-                            if self.player.x == map_x and self.player.y == map_y:
-                                mwin.addch(ry + 1, rx + 1, '@', curses.color_pair(COLOR_NEON_GREEN))
-                            elif self.dungeon_map.explored[map_y][map_x]:
-                                char = self.dungeon_map.tiles[map_y][map_x]
-                                if char == '#':
-                                    mwin.addch(ry + 1, rx + 1, '#', curses.color_pair(COLOR_NEON_MAGENTA))
-                                else:
-                                    mwin.addch(ry + 1, rx + 1, '.', curses.color_pair(COLOR_NEON_CYAN))
-                mwin.refresh()
-            except curses.error:
-                pass
-
+        map_win.refresh()
+        side_win.refresh()
+        log_win.refresh()
         self.stdscr.refresh()
 
     def run(self):
@@ -1306,7 +1294,7 @@ def show_splash(stdscr):
             score_line = f"{s['class']} | Depth: {s['depth']} | Lvl: {s['level']}"
             stdscr.addstr(len(splash) + 4 + i, (w - len(score_line)) // 2, score_line, curses.color_pair(COLOR_NEON_CYAN))
 
-    msg = "SPACE to Start | 'h' Synapse Hub | 'q' Quit"
+    msg = "SPACE to Start | 'h' Hub | '?' How to Play | 'q' Quit"
     if h > len(splash) + 10:
         stdscr.addstr(h - 2, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW))
     stdscr.refresh()
@@ -1318,6 +1306,8 @@ def show_splash(stdscr):
             return "start"
         elif key == ord('h'):
             return "hub"
+        elif key == ord('?'):
+            return "help"
         elif key == ord('q'):
             return "quit"
 
@@ -1371,12 +1361,54 @@ def synapse_hub(stdscr):
         elif key == ord('q'):
             break
 
+def show_help(stdscr):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    help_text = [
+        "--- NEON DUNGEON: HOW TO PLAY ---",
+        "",
+        "CONTROLS:",
+        "  WASD / Arrows : Move and Attack",
+        "  'f'           : Fire Ranged Weapon (if equipped)",
+        "  'e'           : Activate Class Skill",
+        "  'i'           : Open Inventory / Backpack",
+        "  'v'           : Save Game",
+        "  'l'           : Load Game",
+        "  'q'           : Quit / Back",
+        "",
+        "OBJECTIVE:",
+        "  Descend through the sectors by finding the stairs '>'.",
+        "  Slay Glitch-Units to earn XP and Nanites.",
+        "  Collect gear and augmentations to survive deeper sectors.",
+        "  Every 5 levels, a Sector Boss awaits.",
+        "",
+        "SYSTEMS:",
+        "  Memory: Used to fuel powerful active skills.",
+        "  Nanites: Spent in the Synapse Hub for permanent meta-buffs.",
+        "  Augments: Permanent passive character modifications."
+    ]
+    for i, line in enumerate(help_text):
+        if i < h:
+            stdscr.addstr(i + 2, (w - len(line)) // 2, line, curses.color_pair(COLOR_NEON_CYAN))
+
+    stdscr.addstr(h - 2, (w - 20) // 2, "Press any key to back", curses.A_DIM)
+    stdscr.refresh()
+    stdscr.nodelay(False)
+    stdscr.getch()
+    stdscr.nodelay(True)
+
+def run_cli():
+    curses.wrapper(main)
+
 def main(stdscr):
     init_colors()
     while True:
         action = show_splash(stdscr)
         if action == "hub":
             synapse_hub(stdscr)
+            continue
+        elif action == "help":
+            show_help(stdscr)
             continue
         elif action == "quit":
             break
