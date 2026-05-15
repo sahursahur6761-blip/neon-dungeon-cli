@@ -226,7 +226,12 @@ class Entity:
         return None
 
 class Game:
-    def __init__(self, stdscr):
+    def __init__(self, stdscr, seed=None):
+        if seed is None:
+            seed = str(random.randint(0, 999999))
+        self.seed = seed
+        random.seed(self.seed)
+
         self.stdscr = stdscr
         self.running = True
         init_colors()
@@ -344,8 +349,28 @@ class Game:
             curses.napms(100)
         curses.napms(500)
 
+    def victory_screen(self):
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        text = "--- SYSTEM PURIFIED: VICTORY ---"
+        sub = "The Neon Core has been stabilized."
+        self.stdscr.addstr(h // 2, (w - len(text)) // 2, text, curses.color_pair(COLOR_NEON_GREEN) | curses.A_BOLD)
+        self.stdscr.addstr(h // 2 + 1, (w - len(sub)) // 2, sub, curses.color_pair(COLOR_NEON_CYAN))
+        self.stdscr.addstr(h - 2, (w - 20) // 2, "Press any key to finish", curses.A_DIM)
+        self.stdscr.refresh()
+        self.stdscr.nodelay(False)
+        self.stdscr.getch()
+        self.stdscr.nodelay(True)
+        self.record_score()
+        if os.path.exists("savegame.json"): os.remove("savegame.json")
+        self.running = False
+
     def next_level(self):
         self.depth += 1
+        if self.depth == 21:
+            self.victory_screen()
+            return
+
         if self.depth == 6: self.sector_transition("DATA HIVE")
         if self.depth == 11: self.sector_transition("THE MAINFRAME")
 
@@ -373,6 +398,16 @@ class Game:
         self.spawn_lore_terminal()
         self.spawn_explosives()
         self.spawn_hacked_terminal()
+        self.spawn_cyber_crate()
+
+    def spawn_cyber_crate(self):
+        if random.randint(0, 100) < 15:
+            room = self.dungeon_map.rooms[random.randint(0, len(self.dungeon_map.rooms)-1)]
+            pos = self.find_empty_tile_in_room(room)
+            if pos:
+                crate = Entity(pos[0], pos[1], 'C', COLOR_NEON_YELLOW, "Cyber Crate")
+                crate.is_crate = True
+                self.entities.append(crate)
 
     def spawn_hacked_terminal(self):
         if random.randint(0, 100) < 20:
@@ -675,6 +710,7 @@ class Game:
 
     def save_game(self):
         save_data = {
+            "seed": self.seed,
             "depth": self.depth,
             "player": {
                 "player_class": self.player.player_class,
@@ -703,19 +739,21 @@ class Game:
                 "inventory": [
                     {
                         "name": item.name,
-                        "power": item.power,
+                        "power": getattr(item, 'power', 0),
                         "color": item.color,
                         "char": item.char,
-                        "item_type": item.item_type
+                        "item_type": item.item_type,
+                        "weapon_type": getattr(item, 'weapon_type', None)
                     } for item in self.player.inventory
                 ],
                 "equipment": {
                     slot: {
                         "name": item.name,
-                        "power": item.power,
+                        "power": getattr(item, 'power', 0),
                         "color": item.color,
                         "char": item.char,
-                        "item_type": item.item_type
+                        "item_type": item.item_type,
+                        "weapon_type": getattr(item, 'weapon_type', None)
                     } if item else None
                     for slot, item in self.player.equipment.items()
                 }
@@ -757,6 +795,8 @@ class Game:
         with open("savegame.json", "r") as f:
             save_data = json.load(f)
 
+        self.seed = save_data.get("seed", str(random.randint(0, 999999)))
+        random.seed(self.seed)
         self.depth = save_data.get("depth", 1)
         self.level_modifier = save_data["player"].get("level_modifier")
         map_data = save_data["map"]
@@ -784,14 +824,16 @@ class Game:
         for item_data in p_data.get("inventory", []):
             item = Entity(0, 0, item_data["char"], item_data["color"], item_data["name"])
             item.item_type = item_data["item_type"]
-            item.power = item_data["power"]
+            item.power = item_data.get("power", 0)
+            item.weapon_type = item_data.get("weapon_type")
             self.player.inventory.append(item)
 
         for slot, item_data in p_data.get("equipment", {}).items():
             if item_data:
                 item = Entity(0, 0, item_data["char"], item_data["color"], item_data["name"])
                 item.item_type = item_data["item_type"]
-                item.power = item_data["power"]
+                item.power = item_data.get("power", 0)
+                item.weapon_type = item_data.get("weapon_type")
                 self.player.equipment[slot] = item
 
         self.entities = [self.player]
@@ -909,6 +951,11 @@ class Game:
                 elif hasattr(target, 'is_hacked'):
                     self.hacked_menu()
                     self.entities.remove(target)
+                elif hasattr(target, 'is_crate'):
+                    self.message("Cyber Crate opened!", COLOR_NEON_YELLOW)
+                    self.entities.remove(target)
+                    for _ in range(3):
+                        self.spawn_item_at(target.x, target.y)
                 else:
                     self.attack(self.player, target)
 
@@ -1119,6 +1166,13 @@ class Game:
                     if e in self.entities:
                         self.entities.remove(e)
 
+    def spawn_item_at(self, x, y):
+        # Helper to spawn item at specific coord (from crate)
+        item = Entity(x, y, '*', COLOR_NEON_YELLOW, "Nanite Scraps")
+        item.item_type = 'heal'
+        item.is_item = True
+        self.entities.append(item)
+
     def apply_perk(self, perk_name):
         if perk_name == "Overclock":
             self.player.atk += 3
@@ -1186,6 +1240,7 @@ class Game:
 
         summary = [
             f"Class: {self.player.player_class}",
+            f"Run Seed: {self.seed}",
             f"Sector Depth: {self.depth}",
             f"Character Level: {self.player.level}",
             f"Enemies Terminated: {self.player.kills}",
@@ -1203,6 +1258,7 @@ class Game:
     def record_score(self):
         score_data = {
             "class": self.player.player_class,
+            "seed": self.seed,
             "depth": self.depth,
             "level": self.player.level,
             "nanites": self.player.nanites,
@@ -1414,7 +1470,7 @@ def show_splash(stdscr):
     if high_scores:
         stdscr.addstr(len(splash) + 3, (w - 20) // 2, "--- TOP RECORDS ---", curses.color_pair(COLOR_NEON_YELLOW))
         for i, s in enumerate(high_scores):
-            score_line = f"{s['class']} | Depth: {s['depth']} | Lvl: {s['level']}"
+            score_line = f"{s['class']} | Depth: {s['depth']} | Seed: {s.get('seed', '???')}"
             stdscr.addstr(len(splash) + 4 + i, (w - len(score_line)) // 2, score_line, curses.color_pair(COLOR_NEON_CYAN))
 
     msg = "SPACE to Start | 'h' Hub | 'a' Achievements | '?' Help | 'q' Quit"
@@ -1543,7 +1599,19 @@ def main(stdscr):
         elif action == "quit":
             break
 
-        game = Game(stdscr)
+        # Seed input?
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        win = curses.newwin(5, 50, (h - 5) // 2, (w - 50) // 2)
+        win.box()
+        win.addstr(1, 2, "Enter Seed (Empty for Random):", curses.color_pair(COLOR_NEON_CYAN))
+        win.refresh()
+        curses.echo()
+        seed = win.getstr(2, 2, 20).decode('utf-8').strip()
+        curses.noecho()
+        if not seed: seed = None
+
+        game = Game(stdscr, seed=seed)
         game.run()
 
 if __name__ == "__main__":

@@ -2,6 +2,10 @@
 
 An offline Python terminal roguelite game.
 
+ ## 🕹️ Play with Friends (Social Features)
+ - **Run Seeds**: Every dungeon layout is generated from a seed. Share your seed (shown at the start or end of a run) with friends to see who can get the furthest on the same map!
+ - **Global Installation**: Your friends can easily install the game globally and run it using the `neon-dungeon` command (see below).
+
 ## 🚀 Quick Start (Global Install)
 Run this command in the repository root:
 ```bash
