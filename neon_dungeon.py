@@ -3,6 +3,7 @@ import random
 import json
 import os
 import heapq
+import math
 
 # Colors
 COLOR_NEON_CYAN = 1
@@ -122,7 +123,7 @@ class Map:
     def is_blocked(self, x, y):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return True
-        return self.tiles[y][x] == '#'
+        return self.tiles[y][x] in ['#', '+']
 
     def get_path(self, start, goal):
         # A* Pathfinding
@@ -248,6 +249,7 @@ class Game:
 
         self.shake_timer = 0
         self.depth = 1
+        self.particles = []
         self.level_modifier = None
         self.dungeon_map = Map(self.map_width, self.map_height)
         self.dungeon_map.generate_map()
@@ -394,6 +396,7 @@ class Game:
     def spawn_level_content(self):
         self.spawn_enemies()
         self.spawn_items()
+        self.spawn_doors()
         self.spawn_hazards()
         self.spawn_merchant()
         self.spawn_lore_terminal()
@@ -455,6 +458,24 @@ class Game:
                 merchant.is_merchant = True
                 self.entities.append(merchant)
 
+    def spawn_doors(self):
+        for room in self.dungeon_map.rooms[1:]:
+            # Find walls adjacent to floors for door placement
+            for x in range(room.x1, room.x2 + 1):
+                for y in [room.y1, room.y2]:
+                    if 0 <= x < self.map_width and 0 <= y < self.map_height:
+                        if self.dungeon_map.tiles[y][x] == '#':
+                            # Check if it's a tunnel entrance
+                            adj_floor = 0
+                            for dx, dy in [(0,1),(0,-1),(1,0),(-1,0)]:
+                                nx, ny = x+dx, y+dy
+                                if 0 <= nx < self.map_width and 0 <= ny < self.map_height:
+                                    if self.dungeon_map.tiles[ny][nx] == '.':
+                                        adj_floor += 1
+                            if adj_floor >= 2:
+                                self.dungeon_map.tiles[y][x] = '+'
+                                break
+
     def spawn_hazards(self):
         for room in self.dungeon_map.rooms:
             if random.randint(0, 100) < 20:
@@ -463,12 +484,27 @@ class Game:
                     self.dungeon_map.tiles[pos[1]][pos[0]] = '^' # Spike trap/Hazard
 
     def update_fov(self):
-        radius = 5
+        radius = 7
         if self.level_modifier == "LIGHTS OUT":
-            radius = 2
-        for y in range(max(0, self.player.y - radius), min(self.map_height, self.player.y + radius + 1)):
-            for x in range(max(0, self.player.x - radius), min(self.map_width, self.player.x + radius + 1)):
-                self.dungeon_map.explored[y][x] = True
+            radius = 3
+
+        # Raycasted FOV (Bresenham's line algorithm-ish)
+        for i in range(360):
+            rad = i * (math.pi / 180)
+            vx = math.cos(rad)
+            vy = math.sin(rad)
+
+            curr_x, curr_y = float(self.player.x), float(self.player.y)
+            for _ in range(radius):
+                curr_x += vx
+                curr_y += vy
+                ix, iy = int(round(curr_x)), int(round(curr_y))
+                if 0 <= ix < self.map_width and 0 <= iy < self.map_height:
+                    self.dungeon_map.explored[iy][ix] = True
+                    if self.dungeon_map.tiles[iy][ix] == '#':
+                        break
+                else:
+                    break
 
     def reveal_map(self):
         for y in range(self.map_height):
@@ -756,7 +792,8 @@ class Game:
                         "color": item.color,
                         "char": item.char,
                         "item_type": item.item_type,
-                        "weapon_type": getattr(item, 'weapon_type', None)
+                        "weapon_type": getattr(item, 'weapon_type', None),
+                        "is_item": True
                     } for item in self.player.inventory
                 ],
                 "equipment": {
@@ -786,8 +823,12 @@ class Game:
                     "item_type": getattr(e, 'item_type', None),
                     "is_merchant": hasattr(e, 'is_merchant'),
                     "is_lore": hasattr(e, 'is_lore'),
+                    "is_hacked": hasattr(e, 'is_hacked'),
+                    "is_boss": hasattr(e, 'is_boss'),
+                    "is_explosive": hasattr(e, 'is_explosive'),
+                    "is_crate": hasattr(e, 'is_crate'),
                     "ai_type": getattr(e, 'ai_type', None)
-                } for e in self.entities if e != self.player
+                } for e in self.entities if e != self.player and e != self.player.drone
             ],
             "map": {
                 "width": self.dungeon_map.width,
@@ -870,6 +911,14 @@ class Game:
                 entity.is_merchant = True
             if e_data.get("is_lore"):
                 entity.is_lore = True
+            if e_data.get("is_hacked"):
+                entity.is_hacked = True
+            if e_data.get("is_boss"):
+                entity.is_boss = True
+            if e_data.get("is_explosive"):
+                entity.is_explosive = True
+            if e_data.get("is_crate"):
+                entity.is_crate = True
             if e_data.get("ai_type"):
                 entity.ai_type = e_data["ai_type"]
             self.entities.append(entity)
@@ -878,26 +927,33 @@ class Game:
 
     def use_skill(self):
         if self.player.player_class == "Cyberslasher":
-            cost = 0 # Passive-ish or free for now
-            self.message("Cyberslasher: Next attack deals double damage!")
-            self.player.next_attack_multiplier = 2
-        elif self.player.player_class == "Tank":
             if self.player.memory >= 5:
                 self.player.memory -= 5
-                self.message("Tank: Nano-Fortify! DEF increased.")
-                self.player.base_defense += 1
+                self.message("Blade Rush: Next 2 attacks deal double damage!")
+                self.player.next_attack_multiplier = 2
+                self.player.buff_timer = 2
+            else:
+                self.message("Not enough Memory!")
+        elif self.player.player_class == "Tank":
+            if self.player.memory >= 8:
+                self.player.memory -= 8
+                self.message("Titan Protocol: Massive DEF boost (temporarily).")
+                self.player.base_defense += 5
+                self.player.buff_type = "def"
+                self.player.buff_timer = 5
             else:
                 self.message("Not enough Memory!")
         elif self.player.player_class == "Netrunner":
-            if self.player.memory >= 10:
-                self.player.memory -= 10
-                self.message("Netrunner: Nova Burst! All enemies damaged.")
+            if self.player.memory >= 12:
+                self.player.memory -= 12
+                self.message("System Override: All enemies in range short-circuited!")
                 to_remove = []
                 for e in self.entities:
-                    if e != self.player and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant') and not hasattr(e, 'is_lore'):
-                        e.hp -= 10
+                    dist = abs(e.x - self.player.x) + abs(e.y - self.player.y)
+                    if e != self.player and dist < 8 and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant') and not hasattr(e, 'is_lore'):
+                        e.hp -= 20
                         if e.hp <= 0:
-                            self.message(f"{e.name} fried!")
+                            self.message(f"{e.name} fried!", COLOR_NEON_MAGENTA)
                             to_remove.append(e)
                 for e in to_remove:
                     if e in self.entities:
@@ -962,6 +1018,15 @@ class Game:
             dx = 1
 
         if dx != 0 or dy != 0:
+            # Check for door interaction
+            tx, ty = self.player.x + dx, self.player.y + dy
+            if 0 <= tx < self.map_width and 0 <= ty < self.map_height:
+                if self.dungeon_map.tiles[ty][tx] == '+':
+                    self.message("Door Hacked.", COLOR_NEON_GREEN)
+                    self.dungeon_map.tiles[ty][tx] = '.'
+                    self.enemy_turn()
+                    return
+
             target = self.player.move(dx, dy, self.dungeon_map, self.entities)
             if target:
                 if hasattr(target, 'is_item'):
@@ -1113,6 +1178,8 @@ class Game:
         target.hp -= damage
         color = COLOR_NEON_RED if target == self.player else COLOR_NEON_YELLOW
         self.message(f"{attacker.name} hits {target.name} for {damage}!", color)
+        # Damage Particle
+        self.particles.append({"x": target.x, "y": target.y, "char": str(damage)[0], "timer": 10, "color": color})
 
         # Life Leach
         if damage > 0 and hasattr(attacker, 'perks') and "life_leach" in attacker.perks:
@@ -1376,6 +1443,25 @@ Nanites: {self.player.nanites}
     def update(self):
         if self.shake_timer > 0:
             self.shake_timer -= 1
+
+        # Player Buffs
+        if hasattr(self.player, 'buff_timer') and self.player.buff_timer > 0:
+            self.player.buff_timer -= 1
+            if self.player.buff_timer == 0:
+                if getattr(self.player, 'buff_type', None) == "def":
+                    self.player.base_defense -= 5
+                    self.message("Titan Protocol deactivated.")
+                self.player.next_attack_multiplier = 1
+                self.player.buff_type = None
+
+        # Update Particles
+        for p in self.particles[:]:
+            p["timer"] -= 1
+            if p["timer"] <= 0:
+                self.particles.remove(p)
+            else:
+                if random.random() < 0.3: p["y"] -= 1 # Float up
+
         for entity in self.entities:
             if entity.vfx_timer > 0:
                 entity.vfx_timer -= 1
@@ -1440,6 +1526,7 @@ Nanites: {self.player.nanites}
                 if char == '#': color = curses.color_pair(wall_color)
                 elif char == '>': color = curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD
                 elif char == '^': color = curses.color_pair(COLOR_NEON_RED)
+                elif char == '+': color = curses.color_pair(COLOR_NEON_YELLOW)
 
                 try: map_win.addch(y + 1, x + 1, char, color)
                 except curses.error: pass
@@ -1457,6 +1544,12 @@ Nanites: {self.player.nanites}
                     char = entity.vfx_char
                     color = curses.color_pair(COLOR_NEON_RED) | curses.A_BOLD
                 try: map_win.addch(entity.y + 1, entity.x + 1, char, color)
+                except curses.error: pass
+
+        # Draw Particles
+        for p in self.particles:
+            if 0 <= p["x"] < self.map_width and 0 <= p["y"] < self.map_height:
+                try: map_win.addch(p["y"] + 1, p["x"] + 1, p["char"], curses.color_pair(p["color"]))
                 except curses.error: pass
 
         # Sidebar
