@@ -240,6 +240,7 @@ class Game:
         self.map_width = self.screen_width - self.sidebar_w - 1
         self.map_height = self.screen_height - self.log_h - 2
 
+        self.shake_timer = 0
         self.depth = 1
         self.level_modifier = None
         self.dungeon_map = Map(self.map_width, self.map_height)
@@ -263,12 +264,32 @@ class Game:
         if os.path.exists("savegame.json"):
             self.load_game()
         else:
+            self.name_character()
             self.class_selection()
             self.entities = [self.player]
         self.message("Welcome to the Neon Dungeon!", COLOR_NEON_CYAN)
         self.stdscr.nodelay(True)
         if not os.path.exists("savegame.json"):
             self.spawn_level_content()
+
+    def name_character(self):
+        self.stdscr.nodelay(False)
+        curses.curs_set(1)
+        h, w = self.stdscr.getmaxyx()
+        win = curses.newwin(5, 50, (h - 5) // 2, (w - 50) // 2)
+        win.box()
+        win.addstr(1, 2, "Enter Character Name:", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+        win.refresh()
+
+        curses.echo()
+        name = win.getstr(2, 2, 20).decode('utf-8')
+        curses.noecho()
+
+        if name.strip():
+            self.player.name = name.strip()
+
+        curses.curs_set(0)
+        self.stdscr.nodelay(True)
 
     def class_selection(self):
         classes = [
@@ -1040,6 +1061,7 @@ class Game:
     def explode(self, entity):
         self.message("BOOM! Conduit exploded!", COLOR_NEON_RED)
         curses.flash()
+        self.shake_timer = 10
         for e in self.entities[:]:
             dist = abs(e.x - entity.x) + abs(e.y - entity.y)
             if dist <= 1:
@@ -1078,7 +1100,14 @@ class Game:
             dist = abs(entity.x - self.player.x) + abs(entity.y - self.player.y)
 
             dx, dy = 0, 0
-            if ai_type == 'chase' or (ai_type == 'ranged' and dist > 4):
+            # Fleeing logic for melee enemies at low HP
+            if ai_type == 'chase' and entity.hp < entity.max_hp * 0.2 and dist < 5:
+                # Try to move away from player
+                if entity.x < self.player.x: dx = -1
+                elif entity.x > self.player.x: dx = 1
+                elif entity.y < self.player.y: dy = -1
+                elif entity.y > self.player.y: dy = 1
+            elif ai_type == 'chase' or (ai_type == 'ranged' and dist > 4):
                 path = self.dungeon_map.get_path((entity.x, entity.y), (self.player.x, self.player.y))
                 if path:
                     next_step = path[0]
@@ -1141,15 +1170,31 @@ class Game:
             json.dump(scores, f)
 
         # Meta Progression
-        meta = {"total_nanites": 0, "upgrades": {}}
+        meta = {"total_nanites": 0, "upgrades": {}, "achievements": []}
         if os.path.exists("meta.json"):
             with open("meta.json", "r") as f:
                 meta = json.load(f)
+
         meta["total_nanites"] += self.player.nanites
+
+        # Check Achievements
+        new_achs = []
+        achs = meta.get("achievements", [])
+        if self.depth >= 10 and "DEEP DIVER" not in achs: new_achs.append("DEEP DIVER")
+        if self.player.kills >= 50 and "SLAYER" not in achs: new_achs.append("SLAYER")
+        if self.player.nanites >= 500 and "RICH" not in achs: new_achs.append("RICH")
+
+        for a in new_achs:
+            achs.append(a)
+            self.message(f"ACHIEVEMENT UNLOCKED: {a}!", COLOR_NEON_YELLOW)
+
+        meta["achievements"] = achs
         with open("meta.json", "w") as f:
             json.dump(meta, f)
 
     def update(self):
+        if self.shake_timer > 0:
+            self.shake_timer -= 1
         for entity in self.entities:
             if entity.vfx_timer > 0:
                 entity.vfx_timer -= 1
@@ -1175,10 +1220,16 @@ class Game:
     def draw(self):
         self.stdscr.erase()
 
+        # Screen Shake offset
+        off_y, off_x = 0, 0
+        if self.shake_timer > 0:
+            off_y = random.randint(-1, 1)
+            off_x = random.randint(-1, 1)
+
         # Windows
-        map_win = curses.newwin(self.map_height + 2, self.map_width + 2, 0, 0)
-        side_win = curses.newwin(self.map_height + 2, self.sidebar_w, 0, self.map_width + 2)
-        log_win = curses.newwin(self.log_h + 2, self.screen_width, self.map_height + 2, 0)
+        map_win = curses.newwin(self.map_height + 2, self.map_width + 2, off_y, off_x)
+        side_win = curses.newwin(self.map_height + 2, self.sidebar_w, off_y, self.map_width + 2 + off_x)
+        log_win = curses.newwin(self.log_h + 2, self.screen_width, self.map_height + 2 + off_y, off_x)
 
         map_win.box()
         side_win.box()
@@ -1229,6 +1280,7 @@ class Game:
 
         # Sidebar
         side_win.addstr(1, 2, "STATUS", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+        side_win.addstr(2, 2, f"NAME: {self.player.name[:20]}", curses.color_pair(COLOR_NEON_GREEN))
         side_win.addstr(3, 2, f"CLASS: {self.player.player_class}", curses.color_pair(COLOR_NEON_CYAN))
         side_win.addstr(4, 2, f"DEPTH: {self.depth}", curses.color_pair(COLOR_NEON_CYAN))
         side_win.addstr(6, 2, f"HP: {self.player.hp}/{self.player.max_hp}", curses.color_pair(COLOR_NEON_GREEN))
@@ -1259,6 +1311,29 @@ class Game:
             self.update()
             self.draw()
             curses.napms(33) # ~30 FPS
+
+def show_achievements(stdscr):
+    meta = {}
+    if os.path.exists("meta.json"):
+        with open("meta.json", "r") as f:
+            meta = json.load(f)
+
+    achs = meta.get("achievements", [])
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    stdscr.addstr(2, (w - 12) // 2, "ACHIEVEMENTS", curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BOLD)
+
+    if not achs:
+        stdscr.addstr(5, (w - 20) // 2, "No achievements yet.", curses.A_DIM)
+    else:
+        for i, a in enumerate(achs):
+            stdscr.addstr(5 + i, (w - len(a)) // 2, a, curses.color_pair(COLOR_NEON_CYAN))
+
+    stdscr.addstr(h - 2, (w - 20) // 2, "Press any key to back", curses.A_DIM)
+    stdscr.refresh()
+    stdscr.nodelay(False)
+    stdscr.getch()
+    stdscr.nodelay(True)
 
 def show_splash(stdscr):
     stdscr.erase()
@@ -1294,7 +1369,7 @@ def show_splash(stdscr):
             score_line = f"{s['class']} | Depth: {s['depth']} | Lvl: {s['level']}"
             stdscr.addstr(len(splash) + 4 + i, (w - len(score_line)) // 2, score_line, curses.color_pair(COLOR_NEON_CYAN))
 
-    msg = "SPACE to Start | 'h' Hub | '?' How to Play | 'q' Quit"
+    msg = "SPACE to Start | 'h' Hub | 'a' Achievements | '?' Help | 'q' Quit"
     if h > len(splash) + 10:
         stdscr.addstr(h - 2, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW))
     stdscr.refresh()
@@ -1308,6 +1383,8 @@ def show_splash(stdscr):
             return "hub"
         elif key == ord('?'):
             return "help"
+        elif key == ord('a'):
+            return "achievements"
         elif key == ord('q'):
             return "quit"
 
@@ -1409,6 +1486,9 @@ def main(stdscr):
             continue
         elif action == "help":
             show_help(stdscr)
+            continue
+        elif action == "achievements":
+            show_achievements(stdscr)
             continue
         elif action == "quit":
             break
