@@ -238,6 +238,16 @@ class Game:
         start_room_center = self.dungeon_map.rooms[0].center()
         self.player = Entity(start_room_center[0], start_room_center[1], '@', COLOR_NEON_GREEN, "Player")
 
+        # Apply Meta Upgrades
+        if os.path.exists("meta.json"):
+            with open("meta.json", "r") as f:
+                meta = json.load(f)
+                upgrades = meta.get("upgrades", {})
+                self.player.max_hp += upgrades.get("hp", 0) * 5
+                self.player.hp = self.player.max_hp
+                self.player.base_atk += upgrades.get("atk", 0)
+                self.player.base_defense += upgrades.get("def", 0)
+
         self.messages = []
         # Check for save game first
         if os.path.exists("savegame.json"):
@@ -293,8 +303,22 @@ class Game:
                 break
         self.stdscr.nodelay(True)
 
+    def sector_transition(self, name):
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        text = f"ENTERING SECTOR: {name}"
+        for i in range(10):
+            color = COLOR_NEON_CYAN if i % 2 == 0 else COLOR_NEON_MAGENTA
+            self.stdscr.addstr(h // 2, (w - len(text)) // 2, text, curses.color_pair(color) | curses.A_BOLD)
+            self.stdscr.refresh()
+            curses.napms(100)
+        curses.napms(500)
+
     def next_level(self):
         self.depth += 1
+        if self.depth == 6: self.sector_transition("DATA HIVE")
+        if self.depth == 11: self.sector_transition("THE MAINFRAME")
+
         self.level_modifier = None
         if random.randint(0, 100) < 20:
             mods = ["LIGHTS OUT", "NANITE SURGE", "OVERCLOCKED"]
@@ -317,6 +341,17 @@ class Game:
         self.spawn_hazards()
         self.spawn_merchant()
         self.spawn_lore_terminal()
+        self.spawn_explosives()
+
+    def spawn_explosives(self):
+        for room in self.dungeon_map.rooms:
+            if random.randint(0, 100) < 40:
+                pos = self.find_empty_tile_in_room(room)
+                if pos:
+                    conduit = Entity(pos[0], pos[1], '%', COLOR_NEON_YELLOW, "Power Conduit")
+                    conduit.is_explosive = True
+                    conduit.hp = 1
+                    self.entities.append(conduit)
 
     def find_empty_tile_in_room(self, room):
         candidates = []
@@ -361,7 +396,7 @@ class Game:
 
     def spawn_items(self):
         for room in self.dungeon_map.rooms[1:]:
-            if random.randint(0, 100) < 45:
+            if random.randint(0, 100) < 55:
                 pos = self.find_empty_tile_in_room(room)
                 if not pos: continue
                 x, y = pos
@@ -379,9 +414,11 @@ class Game:
                     else:
                         rarity, power, color = "Legendary", 10, COLOR_NEON_MAGENTA
 
-                    names = ["Pulse Blade", "Neural Link", "Laser Edge"]
-                    item = Entity(x, y, '!', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
+                    names = [("Pulse Blade", "melee"), ("Neural Link", "melee"), ("Blaster", "ranged")]
+                    n, wtype = random.choice(names)
+                    item = Entity(x, y, '!', color, f"{rarity} {n}", hp=0, atk=0, defense=0)
                     item.item_type = 'weapon'
+                    item.weapon_type = wtype
                     item.power = power
                 elif roll < 85:
                     rarity_roll = random.randint(0, 100)
@@ -416,13 +453,21 @@ class Game:
     def spawn_enemies(self):
         if self.depth % 5 == 0:
             # Boss level!
-            self.message("WARNING: SECTOR BOSS DETECTED!")
-            curses.beep()
             room = self.dungeon_map.rooms[-1]
             pos = self.find_empty_tile_in_room(room)
             if pos:
-                boss = Entity(pos[0], pos[1], 'B', COLOR_NEON_RED, "NEON OVERLORD",
-                              hp=100 + self.depth * 10, atk=15 + self.depth * 2, defense=10 + self.depth)
+                if self.depth == 5:
+                    boss = Entity(pos[0], pos[1], 'S', COLOR_NEON_RED, "SLUM LORD", hp=80, atk=12, defense=8)
+                elif self.depth == 10:
+                    boss = Entity(pos[0], pos[1], 'Q', COLOR_NEON_RED, "HIVE QUEEN", hp=150, atk=18, defense=12)
+                elif self.depth == 15:
+                    boss = Entity(pos[0], pos[1], 'C', COLOR_NEON_RED, "SYSTEM CORE", hp=300, atk=25, defense=20)
+                else:
+                    boss = Entity(pos[0], pos[1], 'B', COLOR_NEON_RED, "NEON OVERLORD",
+                                  hp=100 + self.depth * 10, atk=15 + self.depth * 2, defense=10 + self.depth)
+
+                self.message(f"WARNING: {boss.name} DETECTED!")
+                curses.beep()
                 boss.is_boss = True
                 self.entities.append(boss)
             return
@@ -718,6 +763,29 @@ class Game:
             else:
                 self.message("Not enough Memory!")
 
+    def ranged_attack(self):
+        weapon = self.player.equipment.get("weapon")
+        if not weapon or getattr(weapon, 'weapon_type', 'melee') != 'ranged':
+            self.message("No ranged weapon equipped!")
+            return
+
+        # Target nearest enemy in range 3
+        target = None
+        min_dist = 4
+        for e in self.entities:
+            if e != self.player and not hasattr(e, 'is_item') and not hasattr(e, 'is_merchant') and not hasattr(e, 'is_lore'):
+                dist = abs(e.x - self.player.x) + abs(e.y - self.player.y)
+                if dist < min_dist:
+                    min_dist = dist
+                    target = e
+
+        if target:
+            self.message(f"Firing Blaster at {target.name}!")
+            self.attack(self.player, target)
+            self.enemy_turn()
+        else:
+            self.message("No target in range.")
+
     def handle_input(self):
         if self.player.hp <= 0:
             key = self.stdscr.getch()
@@ -734,6 +802,8 @@ class Game:
             self.running = False
         elif key == ord('e'):
             self.use_skill()
+        elif key == ord('f'):
+            self.ranged_attack()
         elif key == ord('i'):
             self.inventory_menu()
         elif key == ord('v'):
@@ -770,6 +840,8 @@ class Game:
                     self.message("OUCH! Stepped on a hazard!")
                     self.player.hp -= 3
                 self.enemy_turn()
+                if self.level_modifier == "OVERCLOCKED":
+                    self.enemy_turn()
 
     def inventory_menu(self):
         if not self.player.inventory:
@@ -879,7 +951,10 @@ class Game:
         if target.hp <= 0:
             self.message(f"{target.name} dies!", COLOR_NEON_MAGENTA)
             if target != self.player:
-                self.entities.remove(target)
+                if hasattr(target, 'is_explosive'):
+                    self.explode(target)
+                if target in self.entities:
+                    self.entities.remove(target)
                 attacker.xp += 5
                 if attacker == self.player:
                     attacker.kills += 1
@@ -937,6 +1012,18 @@ class Game:
                 perk_name = chosen_perks[selected][0]
                 self.apply_perk(perk_name)
                 break
+
+    def explode(self, entity):
+        self.message("BOOM! Conduit exploded!", COLOR_NEON_RED)
+        curses.flash()
+        for e in self.entities[:]:
+            dist = abs(e.x - entity.x) + abs(e.y - entity.y)
+            if dist <= 1:
+                e.hp -= 15
+                if e.hp <= 0 and e != self.player:
+                    self.message(f"{e.name} caught in blast!", COLOR_NEON_MAGENTA)
+                    if e in self.entities:
+                        self.entities.remove(e)
 
     def apply_perk(self, perk_name):
         if perk_name == "Overclock":
@@ -1028,6 +1115,15 @@ class Game:
         scores = sorted(scores, key=lambda x: x["depth"], reverse=True)[:5]
         with open("highscores.json", "w") as f:
             json.dump(scores, f)
+
+        # Meta Progression
+        meta = {"total_nanites": 0, "upgrades": {}}
+        if os.path.exists("meta.json"):
+            with open("meta.json", "r") as f:
+                meta = json.load(f)
+        meta["total_nanites"] += self.player.nanites
+        with open("meta.json", "w") as f:
+            json.dump(meta, f)
 
     def update(self):
         for entity in self.entities:
@@ -1134,12 +1230,37 @@ class Game:
                 stats += f" | AUG: {len(self.player.augmentations)}/3"
             self.stdscr.addstr(ui_y + 1, 0, stats[:self.screen_width-1], curses.color_pair(COLOR_NEON_CYAN))
         if ui_y + 2 < self.screen_height:
-            controls = "WASD Move | 'i' Inv | 'e' Skill | 'v' Save | 'l' Load | 'q' Quit"
+            controls = "WASD Move | 'f' Fire | 'i' Inv | 'e' Skill | 'v' Save | 'l' Load | 'q' Quit"
             self.stdscr.addstr(ui_y + 2, 0, controls[:self.screen_width-1], curses.color_pair(COLOR_NEON_MAGENTA))
 
         for i, (msg, color) in enumerate(self.messages):
             if ui_y + 3 + i < self.screen_height:
                 self.stdscr.addstr(ui_y + 3 + i, 0, f"> {msg}"[:self.screen_width-1], curses.color_pair(color))
+
+        # Draw Minimap
+        mw, mh = 20, 10
+        mx, my = self.screen_width - mw - 1, 1
+        if mx > self.map_width // 2:
+            try:
+                mwin = curses.newwin(mh, mw, my, mx)
+                mwin.box()
+                for ry in range(mh - 2):
+                    for rx in range(mw - 2):
+                        # Map full dungeon to minimap
+                        map_x = int(rx * (self.map_width / (mw - 2)))
+                        map_y = int(ry * (self.map_height / (mh - 2)))
+                        if 0 <= map_x < self.map_width and 0 <= map_y < self.map_height:
+                            if self.player.x == map_x and self.player.y == map_y:
+                                mwin.addch(ry + 1, rx + 1, '@', curses.color_pair(COLOR_NEON_GREEN))
+                            elif self.dungeon_map.explored[map_y][map_x]:
+                                char = self.dungeon_map.tiles[map_y][map_x]
+                                if char == '#':
+                                    mwin.addch(ry + 1, rx + 1, '#', curses.color_pair(COLOR_NEON_MAGENTA))
+                                else:
+                                    mwin.addch(ry + 1, rx + 1, '.', curses.color_pair(COLOR_NEON_CYAN))
+                mwin.refresh()
+            except curses.error:
+                pass
 
         self.stdscr.refresh()
 
@@ -1147,8 +1268,6 @@ class Game:
         while self.running:
             self.update_fov()
             self.handle_input()
-            if self.level_modifier == "OVERCLOCKED":
-                self.enemy_turn()
             self.update()
             self.draw()
             curses.napms(33) # ~30 FPS
@@ -1187,19 +1306,83 @@ def show_splash(stdscr):
             score_line = f"{s['class']} | Depth: {s['depth']} | Lvl: {s['level']}"
             stdscr.addstr(len(splash) + 4 + i, (w - len(score_line)) // 2, score_line, curses.color_pair(COLOR_NEON_CYAN))
 
-    msg = "PRESS ANY KEY TO START"
+    msg = "SPACE to Start | 'h' Synapse Hub | 'q' Quit"
     if h > len(splash) + 10:
-        stdscr.addstr(h - 2, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW) | curses.A_BLINK)
+        stdscr.addstr(h - 2, (w - len(msg)) // 2, msg, curses.color_pair(COLOR_NEON_YELLOW))
     stdscr.refresh()
     stdscr.nodelay(False)
-    stdscr.getch()
-    stdscr.nodelay(True)
+    while True:
+        key = stdscr.getch()
+        if key == ord(' '):
+            stdscr.nodelay(True)
+            return "start"
+        elif key == ord('h'):
+            return "hub"
+        elif key == ord('q'):
+            return "quit"
+
+def synapse_hub(stdscr):
+    meta = {"total_nanites": 0, "upgrades": {"hp": 0, "atk": 0, "def": 0}}
+    if os.path.exists("meta.json"):
+        with open("meta.json", "r") as f:
+            meta = json.load(f)
+
+    stdscr.nodelay(False)
+    h, w = stdscr.getmaxyx()
+    menu_h, menu_w = 12, 50
+    win = curses.newwin(menu_h, menu_w, (h - menu_h) // 2, (w - menu_w) // 2)
+    win.keypad(True)
+
+    options = [
+        ("HP Protocol", "hp", 50, "+5 Starting HP"),
+        ("ATK Protocol", "atk", 100, "+1 Starting ATK"),
+        ("DEF Protocol", "def", 100, "+1 Starting DEF")
+    ]
+
+    selected = 0
+    while True:
+        win.erase()
+        win.box()
+        win.addstr(1, 2, f"--- SYNAPSE HUB [NANITES: {meta['total_nanites']}] ---", curses.color_pair(COLOR_NEON_CYAN) | curses.A_BOLD)
+        for i, (name, key, cost, desc) in enumerate(options):
+            lvl = meta["upgrades"].get(key, 0)
+            final_cost = cost * (lvl + 1)
+            attr = curses.A_REVERSE if i == selected else curses.A_NORMAL
+            color = curses.color_pair(COLOR_NEON_GREEN) if meta["total_nanites"] >= final_cost else curses.color_pair(COLOR_NEON_RED)
+            win.addstr(3 + i*2, 2, f"{name} (Lvl {lvl}): {final_cost} N", attr | color)
+            win.addstr(4 + i*2, 4, desc, curses.A_DIM)
+
+        win.addstr(menu_h - 2, 2, "Press 'q' to Return")
+        win.refresh()
+        key = win.getch()
+        if key == curses.KEY_UP:
+            selected = (selected - 1) % len(options)
+        elif key == curses.KEY_DOWN:
+            selected = (selected + 1) % len(options)
+        elif key in [10, 13, ord(' ')]:
+            name, key, cost, desc = options[selected]
+            lvl = meta["upgrades"].get(key, 0)
+            final_cost = cost * (lvl + 1)
+            if meta["total_nanites"] >= final_cost:
+                meta["total_nanites"] -= final_cost
+                meta["upgrades"][key] = lvl + 1
+                with open("meta.json", "w") as f:
+                    json.dump(meta, f)
+        elif key == ord('q'):
+            break
 
 def main(stdscr):
     init_colors()
-    show_splash(stdscr)
-    game = Game(stdscr)
-    game.run()
+    while True:
+        action = show_splash(stdscr)
+        if action == "hub":
+            synapse_hub(stdscr)
+            continue
+        elif action == "quit":
+            break
+
+        game = Game(stdscr)
+        game.run()
 
 if __name__ == "__main__":
     curses.wrapper(main)
