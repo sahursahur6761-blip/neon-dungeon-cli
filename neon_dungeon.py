@@ -10,6 +10,7 @@ COLOR_NEON_MAGENTA = 2
 COLOR_NEON_YELLOW = 3
 COLOR_NEON_GREEN = 4
 COLOR_NEON_RED = 5
+COLOR_NEON_WHITE = 6
 
 def init_colors():
     curses.start_color()
@@ -19,6 +20,7 @@ def init_colors():
     curses.init_pair(COLOR_NEON_YELLOW, curses.COLOR_YELLOW, -1)
     curses.init_pair(COLOR_NEON_GREEN, curses.COLOR_GREEN, -1)
     curses.init_pair(COLOR_NEON_RED, curses.COLOR_RED, -1)
+    curses.init_pair(COLOR_NEON_WHITE, curses.COLOR_WHITE, -1)
 
 class Rect:
     def __init__(self, x, y, w, h):
@@ -44,11 +46,20 @@ class Map:
         self.explored = [[False for _ in range(width)] for _ in range(height)]
         self.rooms = []
 
-    def create_room(self, room):
-        for x in range(room.x1 + 1, room.x2):
+    def create_room(self, room, room_type="rect"):
+        if room_type == "cross":
+            cx, cy = room.center()
+            for x in range(room.x1 + 1, room.x2):
+                if 0 <= x < self.width and 0 <= cy < self.height:
+                    self.tiles[cy][x] = '.'
             for y in range(room.y1 + 1, room.y2):
-                if 0 <= x < self.width and 0 <= y < self.height:
-                    self.tiles[y][x] = '.'
+                if 0 <= cx < self.width and 0 <= y < self.height:
+                    self.tiles[y][cx] = '.'
+        else:
+            for x in range(room.x1 + 1, room.x2):
+                for y in range(room.y1 + 1, room.y2):
+                    if 0 <= x < self.width and 0 <= y < self.height:
+                        self.tiles[y][x] = '.'
 
     def create_h_tunnel(self, x1, x2, y):
         for x in range(min(x1, x2), max(x1, x2) + 1):
@@ -82,7 +93,8 @@ class Map:
                     break
 
             if not failed:
-                self.create_room(new_room)
+                room_type = "cross" if random.random() < 0.2 else "rect"
+                self.create_room(new_room, room_type)
                 (new_x, new_y) = new_room.center()
 
                 if len(self.rooms) > 0:
@@ -160,6 +172,7 @@ class Entity:
         self.level = level
         self.xp = xp
         self.equipment = {"weapon": None, "armor": None}
+        self.augmentations = []
         self.inventory = []
         self.nanites = 0
         self.player_class = None
@@ -167,6 +180,7 @@ class Entity:
         self.memory = 0
         self.vfx_timer = 0
         self.vfx_char = None
+        self.kills = 0
 
     @property
     def atk(self):
@@ -224,6 +238,7 @@ class Game:
         start_room_center = self.dungeon_map.rooms[0].center()
         self.player = Entity(start_room_center[0], start_room_center[1], '@', COLOR_NEON_GREEN, "Player")
 
+        self.messages = []
         # Check for save game first
         if os.path.exists("savegame.json"):
             self.load_game()
@@ -231,9 +246,10 @@ class Game:
             self.class_selection()
 
         self.entities = [self.player]
-        self.messages = ["Welcome to the Neon Dungeon!"]
+        self.message("Welcome to the Neon Dungeon!", COLOR_NEON_CYAN)
         self.stdscr.nodelay(True)
-        self.spawn_level_content()
+        if not os.path.exists("savegame.json"):
+            self.spawn_level_content()
 
     def class_selection(self):
         classes = [
@@ -302,33 +318,38 @@ class Game:
         self.spawn_merchant()
         self.spawn_lore_terminal()
 
+    def find_empty_tile_in_room(self, room):
+        candidates = []
+        for x in range(room.x1 + 1, room.x2):
+            for y in range(room.y1 + 1, room.y2):
+                if self.dungeon_map.tiles[y][x] == '.' and not any(e.x == x and e.y == y for e in self.entities):
+                    candidates.append((x, y))
+        return random.choice(candidates) if candidates else None
+
     def spawn_lore_terminal(self):
         if random.randint(0, 100) < 30:
             room = self.dungeon_map.rooms[random.randint(0, len(self.dungeon_map.rooms)-1)]
-            x, y = room.center()
-            x += 1
-            if 0 <= x < self.map_width:
-                terminal = Entity(x, y, 'L', COLOR_NEON_CYAN, "Lore Terminal")
+            pos = self.find_empty_tile_in_room(room)
+            if pos:
+                terminal = Entity(pos[0], pos[1], 'L', COLOR_NEON_CYAN, "Lore Terminal")
                 terminal.is_lore = True
                 self.entities.append(terminal)
 
     def spawn_merchant(self):
         if random.randint(0, 100) < 50:
             room = self.dungeon_map.rooms[random.randint(1, len(self.dungeon_map.rooms)-1)]
-            x, y = room.center()
-            x -= 2
-            if 0 <= x < self.map_width:
-                merchant = Entity(x, y, 'M', COLOR_NEON_YELLOW, "Merchant Terminal")
+            pos = self.find_empty_tile_in_room(room)
+            if pos:
+                merchant = Entity(pos[0], pos[1], 'M', COLOR_NEON_YELLOW, "Merchant Terminal")
                 merchant.is_merchant = True
                 self.entities.append(merchant)
 
     def spawn_hazards(self):
         for room in self.dungeon_map.rooms:
             if random.randint(0, 100) < 20:
-                x, y = room.center()
-                x += 2 # Offset from center
-                if 0 <= x < self.map_width:
-                    self.dungeon_map.tiles[y][x] = '^' # Spike trap/Hazard
+                pos = self.find_empty_tile_in_room(room)
+                if pos:
+                    self.dungeon_map.tiles[pos[1]][pos[0]] = '^' # Spike trap/Hazard
 
     def update_fov(self):
         radius = 5
@@ -341,9 +362,9 @@ class Game:
     def spawn_items(self):
         for room in self.dungeon_map.rooms[1:]:
             if random.randint(0, 100) < 45:
-                x, y = room.center()
-                if any(e.x == x and e.y == y for e in self.entities):
-                    x += 1
+                pos = self.find_empty_tile_in_room(room)
+                if not pos: continue
+                x, y = pos
 
                 roll = random.randint(0, 100)
                 if roll < 50:
@@ -362,7 +383,7 @@ class Game:
                     item = Entity(x, y, '!', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
                     item.item_type = 'weapon'
                     item.power = power
-                else:
+                elif roll < 85:
                     rarity_roll = random.randint(0, 100)
                     if rarity_roll < 70:
                         rarity, power, color = "Common", 1, COLOR_NEON_CYAN
@@ -375,6 +396,19 @@ class Game:
                     item = Entity(x, y, '[', color, f"{rarity} {random.choice(names)}", hp=0, atk=0, defense=0)
                     item.item_type = 'armor'
                     item.power = power
+                elif roll < 95:
+                    rarity_roll = random.randint(0, 100)
+                    if rarity_roll < 70:
+                        rarity, power, name, color = "Common", 5, "Neural Link", COLOR_NEON_CYAN
+                    else:
+                        rarity, power, name, color = "Rare", 10, "Synapse Booster", COLOR_NEON_YELLOW
+
+                    item = Entity(x, y, '&', color, f"{rarity} {name}", hp=0, atk=0, defense=0)
+                    item.item_type = 'augmentation'
+                    item.power = power # Represents crit bonus %
+                else:
+                    item = Entity(x, y, '?', COLOR_NEON_WHITE if hasattr(curses, 'COLOR_WHITE') else COLOR_NEON_CYAN, "Glitched Junk")
+                    item.item_type = 'junk'
 
                 item.is_item = True
                 self.entities.append(item)
@@ -385,16 +419,19 @@ class Game:
             self.message("WARNING: SECTOR BOSS DETECTED!")
             curses.beep()
             room = self.dungeon_map.rooms[-1]
-            x, y = room.center()
-            boss = Entity(x, y, 'B', COLOR_NEON_RED, "NEON OVERLORD",
-                          hp=100 + self.depth * 10, atk=15 + self.depth * 2, defense=10 + self.depth)
-            boss.is_boss = True
-            self.entities.append(boss)
+            pos = self.find_empty_tile_in_room(room)
+            if pos:
+                boss = Entity(pos[0], pos[1], 'B', COLOR_NEON_RED, "NEON OVERLORD",
+                              hp=100 + self.depth * 10, atk=15 + self.depth * 2, defense=10 + self.depth)
+                boss.is_boss = True
+                self.entities.append(boss)
             return
 
         for room in self.dungeon_map.rooms[1:]:
             if random.randint(0, 100) < 70 + self.depth * 2:
-                x, y = room.center()
+                pos = self.find_empty_tile_in_room(room)
+                if not pos: continue
+                x, y = pos
 
                 roll = random.randint(0, 100)
                 if roll < 50:
@@ -416,8 +453,8 @@ class Game:
 
                 self.entities.append(enemy)
 
-    def message(self, text):
-        self.messages.append(text)
+    def message(self, text, color=COLOR_NEON_YELLOW):
+        self.messages.append((text, color))
         if len(self.messages) > 5:
             self.messages.pop(0)
 
@@ -531,6 +568,15 @@ class Game:
                 "nanites": self.player.nanites,
                 "level_modifier": self.level_modifier,
                 "perks": getattr(self.player, 'perks', []),
+                "augmentations": [
+                    {
+                        "name": item.name,
+                        "power": item.power,
+                        "color": item.color,
+                        "char": item.char,
+                        "item_type": item.item_type
+                    } for item in self.player.augmentations
+                ],
                 "inventory": [
                     {
                         "name": item.name,
@@ -605,6 +651,12 @@ class Game:
         self.player.max_memory = p_data.get("max_memory", 0)
         self.player.nanites = p_data.get("nanites", 0)
         self.player.perks = p_data.get("perks", [])
+        self.player.augmentations = []
+        for item_data in p_data.get("augmentations", []):
+            item = Entity(0, 0, item_data["char"], item_data["color"], item_data["name"])
+            item.item_type = item_data["item_type"]
+            item.power = item_data["power"]
+            self.player.augmentations.append(item)
         self.player.inventory = []
         for item_data in p_data.get("inventory", []):
             item = Entity(0, 0, item_data["char"], item_data["color"], item_data["name"])
@@ -749,12 +801,20 @@ class Game:
                 selected = (selected + 1) % len(self.player.inventory)
             elif key in [10, 13, ord(' ')]:
                 item = self.player.inventory[selected]
-                if item.item_type == "weapon":
+                if item.item_type == "augmentation":
+                    if len(self.player.augmentations) < 3:
+                        self.player.augmentations.append(item)
+                        self.player.inventory.pop(selected)
+                        self.message(f"Installed {item.name}!")
+                    else:
+                        self.message("Augment slots full!")
+                    break
+                elif item.item_type == "weapon":
                     self.player.equipment["weapon"] = item
-                    self.message(f"Equipped {item.name}!")
+                    self.message(f"Equipped {item.name}!", COLOR_NEON_CYAN)
                 elif item.item_type == "armor":
                     self.player.equipment["armor"] = item
-                    self.message(f"Equipped {item.name}!")
+                    self.message(f"Equipped {item.name}!", COLOR_NEON_CYAN)
                 break
             elif key == ord('q'):
                 break
@@ -762,12 +822,12 @@ class Game:
 
     def pick_up(self, item):
         if item.item_type == 'heal':
-            self.message(f"Used {item.name}! +10 HP.")
+            self.message(f"Used {item.name}! +10 HP.", COLOR_NEON_GREEN)
             self.player.hp = min(self.player.max_hp, self.player.hp + 10)
         else:
             if len(self.player.inventory) < 5:
                 self.player.inventory.append(item)
-                self.message(f"Stored {item.name} in backpack.")
+                self.message(f"Stored {item.name} in backpack.", COLOR_NEON_CYAN)
             else:
                 self.message("Backpack full!")
                 return
@@ -795,27 +855,34 @@ class Game:
 
         # Critical hit check
         crit_chance = 0.1
+        if attacker == self.player:
+            for aug in self.player.augmentations:
+                if "Neural" in aug.name or "Synapse" in aug.name:
+                    crit_chance += aug.power / 100.0
+
         is_crit = random.random() < crit_chance
 
         damage = max(0, attacker.atk - target.defense)
         damage = int(damage * multiplier)
         if is_crit:
             damage = int(damage * 1.5)
-            self.message("CRITICAL HIT!")
+            self.message("CRITICAL HIT!", COLOR_NEON_RED)
             curses.beep()
 
         target.hp -= damage
-        self.message(f"{attacker.name} hits {target.name} for {damage}!")
+        color = COLOR_NEON_RED if target == self.player else COLOR_NEON_YELLOW
+        self.message(f"{attacker.name} hits {target.name} for {damage}!", color)
 
         # Life Leach
         if damage > 0 and hasattr(attacker, 'perks') and "life_leach" in attacker.perks:
             attacker.hp = min(attacker.max_hp, attacker.hp + 1)
         if target.hp <= 0:
-            self.message(f"{target.name} dies!")
+            self.message(f"{target.name} dies!", COLOR_NEON_MAGENTA)
             if target != self.player:
                 self.entities.remove(target)
                 attacker.xp += 5
                 if attacker == self.player:
+                    attacker.kills += 1
                     gain = random.randint(1, 5) + self.depth
                     if self.level_modifier == "NANITE SURGE":
                         gain *= 2
@@ -921,12 +988,37 @@ class Game:
             elif can_shoot:
                 self.attack(entity, self.player)
 
+    def show_run_summary(self):
+        self.stdscr.nodelay(False)
+        menu_h, menu_w = 12, 50
+        menu_y, menu_x = (self.screen_height - menu_h) // 2, (self.screen_width - menu_w) // 2
+        win = curses.newwin(menu_h, menu_w, menu_y, menu_x)
+        win.box()
+        win.addstr(1, (menu_w - 20) // 2, "--- RUN SUMMARY ---", curses.color_pair(COLOR_NEON_RED) | curses.A_BOLD)
+
+        summary = [
+            f"Class: {self.player.player_class}",
+            f"Sector Depth: {self.depth}",
+            f"Character Level: {self.player.level}",
+            f"Enemies Terminated: {self.player.kills}",
+            f"Nanites Scavenged: {self.player.nanites}"
+        ]
+
+        for i, line in enumerate(summary):
+            win.addstr(3 + i, 4, line, curses.color_pair(COLOR_NEON_CYAN))
+
+        win.addstr(menu_h - 2, (menu_w - 22) // 2, "Press any key to exit", curses.A_DIM)
+        win.refresh()
+        win.getch()
+        self.stdscr.nodelay(True)
+
     def record_score(self):
         score_data = {
             "class": self.player.player_class,
             "depth": self.depth,
             "level": self.player.level,
-            "nanites": self.player.nanites
+            "nanites": self.player.nanites,
+            "kills": self.player.kills
         }
         scores = []
         if os.path.exists("highscores.json"):
@@ -945,9 +1037,17 @@ class Game:
                 entity.vfx_char = None
 
         if self.player.hp <= 0:
-            if "GAME OVER" not in self.messages[-1]:
-                self.message("GAME OVER! Press 'q' to quit.")
+            game_over_shown = False
+            for msg, _ in self.messages:
+                if "GAME OVER" in msg:
+                    game_over_shown = True
+                    break
+
+            if not game_over_shown:
+                self.message("GAME OVER!")
                 self.record_score()
+                self.show_run_summary()
+                self.message("Press 'q' to quit.")
                 if os.path.exists("savegame.json"):
                     os.remove("savegame.json")
             self.player.char = 'X'
@@ -1030,14 +1130,16 @@ class Game:
             stats = f"[{self.player.player_class}] LVL: {self.player.level} | HP: {self.player.hp}/{self.player.max_hp} | ATK: {self.player.atk} | DEF: {self.player.defense} | XP: {self.player.xp}/{self.player.level*10} | N: {self.player.nanites}"
             if self.player.max_memory > 0:
                 stats += f" | MEM: {self.player.memory}/{self.player.max_memory}"
+            if self.player.augmentations:
+                stats += f" | AUG: {len(self.player.augmentations)}/3"
             self.stdscr.addstr(ui_y + 1, 0, stats[:self.screen_width-1], curses.color_pair(COLOR_NEON_CYAN))
         if ui_y + 2 < self.screen_height:
             controls = "WASD Move | 'i' Inv | 'e' Skill | 'v' Save | 'l' Load | 'q' Quit"
             self.stdscr.addstr(ui_y + 2, 0, controls[:self.screen_width-1], curses.color_pair(COLOR_NEON_MAGENTA))
 
-        for i, msg in enumerate(self.messages):
+        for i, (msg, color) in enumerate(self.messages):
             if ui_y + 3 + i < self.screen_height:
-                self.stdscr.addstr(ui_y + 3 + i, 0, f"> {msg}"[:self.screen_width-1], curses.color_pair(COLOR_NEON_YELLOW))
+                self.stdscr.addstr(ui_y + 3 + i, 0, f"> {msg}"[:self.screen_width-1], curses.color_pair(color))
 
         self.stdscr.refresh()
 
